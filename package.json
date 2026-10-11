@@ -1,0 +1,25 @@
+{
+  "name": "thoughtforge-obsidian",
+  "version": "0.0.1",
+  "private": true,
+  "type": "module",
+  "license": "MIT",
+  "author": "yoruforge",
+  "workspaces": [
+    "packages/core",
+    "packages/map-view"
+  ],
+  "scripts": {
+    "build": "tsc -p packages/core/tsconfig.json && tsc -p tsconfig.json && node esbuild.config.mjs"
+  },
+  "dependencies": {
+    "@thoughtforge/core": "0.0.0",
+    "@thoughtforge/map-view": "0.0.0"
+  },
+  "devDependencies": {
+    "typescript": "7.0.2",
+    "esbuild": "0.28.1",
+    "obsidian": "1.8.7",
+    "@types/node": "22.15.30"
+  }
+}

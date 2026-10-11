@@ -1,0 +1,20 @@
+{
+  "name": "@thoughtforge/core",
+  "version": "0.0.0",
+  "type": "module",
+  "description": "Host-independent ThoughtForge core engine.",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "default": "./dist/index.js"
+    }
+  },
+  "files": [
+    "dist"
+  ],
+  "dependencies": {
+    "js-yaml": "4.3.2",
+    "markdown-it": "14.3.1"
+  },
+  "license": "MIT"
+}

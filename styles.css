@@ -1,0 +1,35 @@
+.thoughtforge-obsidian-frame {
+  display: block;
+  width: 100%;
+  height: 100%;
+  flex: 1;
+  min-height: 0;
+  border: 0;
+}
+.thoughtforge-obsidian-view {
+  padding: 0 !important;
+  overflow: hidden;
+  display: flex;
+  flex-direction: column;
+}
+.thoughtforge-current-frame { flex: 1; min-height: 0; }
+.thoughtforge-current-frame::details-content { height: 100%; }
+
+.thoughtforge-permission-status {
+  flex: none;
+  margin: 0;
+  padding: 8px 12px;
+  max-height: 25%;
+  overflow: auto;
+  color: var(--text-muted);
+  background: var(--background-secondary);
+}
+
+.thoughtforge-retired-input {
+  flex: none;
+  max-height: 45%;
+  overflow: auto;
+  background: var(--background-secondary);
+}
+.thoughtforge-retired-input > summary { padding: 8px 12px; }
+.thoughtforge-retired-input > iframe { height: 420px; min-height: 240px; }

@@ -1,0 +1,13 @@
+{
+  "name": "@thoughtforge/map-view",
+  "version": "0.0.0",
+  "type": "module",
+  "license": "MIT",
+  "private": true,
+  "exports": {
+    "./map-view": {
+      "types": "./src/map-view/assets.d.mts",
+      "default": "./src/map-view/assets.mjs"
+    }
+  }
+}
