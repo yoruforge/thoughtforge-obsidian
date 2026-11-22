@@ -19,3 +19,7 @@
    - すべての CSS は `.ito-*` プレフィックス配下にスコープする。
 3. **検証ゲート**：実装変更後は必ず `pnpm verify`（`typecheck` + `lint` + `test` + `build`）を通す。
 4. **未実装箇所**：後続マイルストーンのフックは `// TODO: [理由] - [タスク内容]` 形式で明記する。
+
+## 自己改善ハーネス（Phase 1）
+
+- 明示的に振り返り・再発防止・知見整理を依頼されたときのみ `session-retro` Skill（既定: 提案モード・無書込み。正本: `.agents/skills/session-retro/SKILL.md` / Claude Code 入口: `.claude/skills/session-retro/SKILL.md`）を使用する。運用・取り消し方は `docs/harness-guide.md` を参照する。
