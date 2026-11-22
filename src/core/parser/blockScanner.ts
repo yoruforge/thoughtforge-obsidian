@@ -15,6 +15,8 @@ export interface ScannedListItem {
   readonly indentColumns: number;
   readonly marker: string;
   readonly contentStartColumn: number;
+  /** CommonMark content column (in tab-expanded columns); deeper lines at or beyond it nest. */
+  readonly contentColumns: number;
 }
 
 export interface ScannedUnmappedBlock {
@@ -74,6 +76,27 @@ export function countIndentColumns(indentRaw: string): number {
     }
   }
   return cols;
+}
+
+/**
+ * Returns the CommonMark content column of a list item line in tab-expanded columns:
+ * indent + marker width + the spaces after the marker (1 when the gap is empty or wider than 4).
+ */
+export function computeListContentColumns(indentRaw: string, marker: string, gapRaw: string): number {
+  const markerEnd = countIndentColumns(indentRaw) + marker.length;
+  let cols = markerEnd;
+  for (const ch of gapRaw) {
+    cols += ch === '\t' ? 4 - (cols % 4) : 1;
+  }
+  const gapCols = cols - markerEnd;
+  return markerEnd + (gapCols === 0 || gapCols > 4 ? 1 : gapCols);
+}
+
+/** Returns the content column of a list item line, or null when the line is not a list item. */
+export function listItemContentColumnsOfLine(line: string): number | null {
+  const match = LIST_ITEM_RE.exec(line);
+  if (!match || match[1] === undefined || match[2] === undefined) return null;
+  return computeListContentColumns(match[1], match[2], match[3] ?? '');
 }
 
 function isBlank(line: string): boolean {
@@ -468,6 +491,7 @@ export function scanBlocks(lines: readonly string[]): BlockScanResult {
         indentColumns,
         marker,
         contentStartColumn,
+        contentColumns: computeListContentColumns(indentRaw, marker, listMatch[3] ?? ''),
       });
       insideListContext = true;
       prevWasBlank = false;

@@ -57,14 +57,24 @@ export interface TextEdit {
 
 export type PatchRejectReason =
   | 'read-only-document'
+  | 'blocked-document'
   | 'stale-target'
   | 'newline-in-title'
+  | 'empty-title'
+  | 'block-syntax-in-title'
+  | 'cannot-insert-sibling-for-root'
   | 'invalid-note-block-syntax'
   | 'heading-level-out-of-range'
   | 'mixed-heading-list-conversion'
   | 'indent-sensitive-unmapped-block'
   | 'unmapped-delete-requires-confirmation'
   | 'cannot-promote-with-note-or-unmapped'
-  | 'invariant-check-failed';
+  | 'invariant-check-failed'
+  | 'unsupported-command';
 
-// TODO: [M2 双方向編集] - planner.ts / apply.ts / validator.ts を実装し、SemanticCommand から最小 TextEdit と Dry-Run 再解析を返す
+export interface PatchFocusHint {
+  readonly targetHeaderLine: number;
+  readonly expectedTitleRaw: string;
+}
+
+// TODO: [M2-b/c 構造編集・ノート編集] - planner.ts / validator.ts に残りの SemanticCommand（updateNote / insertParent / moveSibling / indent / outdent / reparent / delete / pasteBranch）を追加する

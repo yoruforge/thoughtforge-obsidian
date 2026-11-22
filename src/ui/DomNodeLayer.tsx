@@ -5,11 +5,16 @@ import {
   resolveLevelStyle,
   type MapThemePalette,
 } from '../core/layout/theme';
+import type { EditingSession } from './editSession';
+import { InlineEditor } from './InlineEditor';
 
 export interface DomNodeLayerProps {
   readonly document: MindMapDocument;
   readonly visibleLayoutNodes: readonly LayoutNode[];
   readonly selectedId: string | null;
+  readonly editingSession: EditingSession | null;
+  readonly imeGuardWindowMs: number;
+  readonly inlineEditorLabel: string;
   readonly dimmedNodeIds: ReadonlySet<string>;
   readonly matchedNodeIds: ReadonlySet<string>;
   readonly effectiveCollapsedIds: ReadonlySet<string>;
@@ -19,12 +24,19 @@ export interface DomNodeLayerProps {
   readonly onToggleCollapse: (nodeId: string) => void;
   readonly onOpenPopover: (nodeId: string) => void;
   readonly onOpenLink: (link: TopicLink, newTab: boolean) => void;
+  readonly onStartEdit: (nodeId: string) => void;
+  readonly onCommitEdit: (session: EditingSession, nextTitle: string) => void;
+  readonly onCancelEdit: () => void;
+  readonly onDiscardEdit: (unsavedValue: string) => void;
 }
 
 export function DomNodeLayer({
   document,
   visibleLayoutNodes,
   selectedId,
+  editingSession,
+  imeGuardWindowMs,
+  inlineEditorLabel,
   dimmedNodeIds,
   matchedNodeIds,
   effectiveCollapsedIds,
@@ -34,6 +46,10 @@ export function DomNodeLayer({
   onToggleCollapse,
   onOpenPopover,
   onOpenLink,
+  onStartEdit,
+  onCommitEdit,
+  onCancelEdit,
+  onDiscardEdit,
 }: DomNodeLayerProps) {
   return (
     <div className="ito-node-layer" role="tree" aria-label="Mind map topics">
@@ -93,10 +109,14 @@ export function DomNodeLayer({
           }
         };
 
+        const activeEditingSession =
+          editingSession !== null && editingSession.nodeId === ln.id ? editingSession : null;
+        const isEditing = activeEditingSession !== null;
         const classNames = [
           'ito-node',
           isCenter ? 'ito-node-center' : `ito-node-${ln.side}`,
           isSelected ? 'ito-node-selected' : '',
+          isEditing ? 'ito-node-editing' : '',
           isMatched ? 'ito-node-matched' : '',
           levelStyle.shape === 'underline' ? 'ito-node-underline' : '',
         ]
@@ -120,16 +140,27 @@ export function DomNodeLayer({
             onDoubleClick={(event) => {
               event.stopPropagation();
               onSelectNode(ln.id);
-              // TODO: [M2 双方向編集] - ダブルクリックでタイトルの InlineEditor 編集モードへ遷移する
-              onOpenPopover(ln.id);
+              onStartEdit(ln.id);
             }}
           >
-            <span className="ito-node-title">
-              {topic.preservedPrefix.length > 0 && (
-                <span className="ito-node-task-prefix">{topic.preservedPrefix}</span>
-              )}
-              {topic.displayTitle.length > 0 ? topic.displayTitle : '(untitled)'}
-            </span>
+            {activeEditingSession !== null ? (
+              <InlineEditor
+                key={`${activeEditingSession.guard.expectedContentHash}:${activeEditingSession.nodeId}`}
+                initialValue={activeEditingSession.initialTitleRaw}
+                imeGuardWindowMs={imeGuardWindowMs}
+                ariaLabel={inlineEditorLabel}
+                onCommit={(nextTitle) => onCommitEdit(activeEditingSession, nextTitle)}
+                onCancel={onCancelEdit}
+                onDiscard={onDiscardEdit}
+              />
+            ) : (
+              <span className="ito-node-title">
+                {topic.preservedPrefix.length > 0 && (
+                  <span className="ito-node-task-prefix">{topic.preservedPrefix}</span>
+                )}
+                {topic.displayTitle.length > 0 ? topic.displayTitle : '(untitled)'}
+              </span>
+            )}
 
             {(topic.noteRange !== null ||
               topic.unmappedBlocks.length > 0 ||

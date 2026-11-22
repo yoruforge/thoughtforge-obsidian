@@ -151,6 +151,25 @@
   z-index: 5;
 }
 
+.ito-node-editing {
+  z-index: 10;
+  cursor: text;
+}
+
+.ito-inline-editor {
+  flex: 1 1 auto;
+  min-width: 80px;
+  width: 100%;
+  font: inherit;
+  color: var(--text-normal);
+  background: var(--background-primary);
+  border: 1px solid var(--interactive-accent);
+  border-radius: 4px;
+  padding: 1px 6px;
+  outline: none;
+  user-select: text;
+}
+
 .ito-node-matched {
   box-shadow: 0 0 0 2px #f59e0b;
 }

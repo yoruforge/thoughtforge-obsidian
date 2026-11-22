@@ -35,6 +35,8 @@ interface MutableNode {
   headingLevel: number | null;
   listMarker: string | null;
   indentColumns: number;
+  /** CommonMark content column for list items (0 for other topics). */
+  contentColumns: number;
   headerLine: number;
   titleRange: OffsetRange | null;
   titleRaw: string;
@@ -188,6 +190,7 @@ export function buildMindMapDocument(
       headingLevel: 1,
       listMarker: null,
       indentColumns: 0,
+      contentColumns: 0,
       headerLine: h1Item.line,
       titleRange: parts.titleRange,
       titleRaw: parts.titleRaw,
@@ -210,6 +213,7 @@ export function buildMindMapDocument(
       headingLevel: null,
       listMarker: null,
       indentColumns: 0,
+      contentColumns: 0,
       headerLine: 0,
       titleRange: null,
       titleRaw: fallbackTitle,
@@ -375,6 +379,7 @@ export function buildMindMapDocument(
         headingLevel: item.level,
         listMarker: null,
         indentColumns: 0,
+        contentColumns: 0,
         headerLine: item.line,
         titleRange: parts.titleRange,
         titleRaw: parts.titleRaw,
@@ -416,7 +421,8 @@ export function buildMindMapDocument(
       while (listStack.length > 0) {
         const top = listStack[listStack.length - 1];
         if (!top) break;
-        if (top.indentColumns >= item.indentColumns) {
+        // CommonMark: a list item nests only when indented to the parent's content column.
+        if (item.indentColumns < top.contentColumns) {
           listStack.pop();
         } else {
           break;
@@ -441,6 +447,7 @@ export function buildMindMapDocument(
         headingLevel: null,
         listMarker: item.marker,
         indentColumns: item.indentColumns,
+        contentColumns: item.contentColumns,
         headerLine: item.line,
         titleRange: parts.titleRange,
         titleRaw: parts.titleRaw,

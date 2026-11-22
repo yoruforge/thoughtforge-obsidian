@@ -9,7 +9,9 @@ import {
 import { getMessages, type Messages } from './i18n';
 import { registerPluginCommands } from './obsidian/commands';
 import { MINDMAP_VIEW_TYPE, MindMapView } from './obsidian/MindMapView';
+import { ObsidianHostAdapter } from './obsidian/ObsidianHostAdapter';
 import { MindMapSettingTab } from './obsidian/settingsTab';
+import { FileCoordinator } from './sync/FileCoordinator';
 
 function isValidDraftEntry(value: unknown): value is DraftEntry {
   if (typeof value !== 'object' || value === null) return false;
@@ -89,10 +91,18 @@ function parseStoredPluginData(raw: unknown): {
 export default class ThoughtForgePlugin extends Plugin {
   private pluginData: PluginDataV1 = DEFAULT_PLUGIN_DATA;
   private dataWritable = true;
+  private fileCoordinator: FileCoordinator | null = null;
   messages: Messages = getMessages('en');
 
   get mindMapSettings(): PluginSettings {
     return this.pluginData.settings;
+  }
+
+  getFileCoordinator(): FileCoordinator {
+    if (this.fileCoordinator === null) {
+      this.fileCoordinator = new FileCoordinator(new ObsidianHostAdapter(this.app));
+    }
+    return this.fileCoordinator;
   }
 
   async onload(): Promise<void> {
@@ -140,6 +150,7 @@ export default class ThoughtForgePlugin extends Plugin {
   }
 
   onunload(): void {
+    this.fileCoordinator = null;
     // Workspace view cleanup is handled via MindMapView.onClose().
   }
 

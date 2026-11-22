@@ -1,4 +1,11 @@
-import type { SemanticCommand } from '../core/patch/commands';
+import type { MindMapDocument } from '../core/model';
+import type { PatchRejectReason, SemanticCommand } from '../core/patch/commands';
+
+export type SyncRejectCode =
+  | PatchRejectReason
+  | 'editor-dirty'
+  | 'editor-state-unknown'
+  | 'io-error';
 
 export interface BacklinkItem {
   readonly sourcePath: string;
@@ -32,11 +39,15 @@ export interface NodeMetadataProvider {
 
 export interface CommandDispatchOutcome {
   readonly accepted: boolean;
+  readonly rejectCode?: SyncRejectCode;
   readonly reason?: string;
+  readonly focusNodeId?: string;
+  readonly nextDocument?: MindMapDocument;
+  readonly nextRawText?: string;
 }
 
 export interface CommandDispatcher {
   dispatch(command: SemanticCommand): Promise<CommandDispatchOutcome>;
 }
 
-// TODO: [M2 Sync 層] - FileCoordinator / MarkdownEditorGate / DraftStore を実装し ObsidianHostPort に接続する
+// TODO: [M2-b/M3 Sync 拡張] - Undo/Redo スタックと data.json 下書き退避（DraftStore）を FileCoordinator に接続する

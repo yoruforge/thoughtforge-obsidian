@@ -4,6 +4,7 @@ import type { Messages } from '../i18n';
 export interface StatusBarProps {
   readonly document: MindMapDocument;
   readonly messages: Messages;
+  readonly canEdit: boolean;
   readonly filterActive: boolean;
   readonly matchCount: number;
 }
@@ -11,6 +12,7 @@ export interface StatusBarProps {
 export function StatusBar({
   document,
   messages,
+  canEdit,
   filterActive,
   matchCount,
 }: StatusBarProps) {
@@ -31,7 +33,7 @@ export function StatusBar({
         </span>
       ) : (
         <span className="ito-status-item ito-status-muted">
-          {messages.status.m1PreviewMode}
+          {canEdit ? messages.status.m2EditReady : messages.status.m1PreviewMode}
         </span>
       )}
 

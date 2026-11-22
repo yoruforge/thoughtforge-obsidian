@@ -15,12 +15,21 @@ import type {
   ParseResult,
   TopicLink,
 } from '../core/model';
+import type { SemanticCommand } from '../core/patch/commands';
 import {
   computeDepthCollapsedIds,
   computeVisibilityAndEmphasis,
 } from '../core/view/filterFocus';
 import { resolveArrowNavigation, type ArrowDirection } from '../core/view/navigation';
 import type { Messages } from '../i18n';
+import type { CommandDispatchOutcome } from '../sync/ports';
+import {
+  buildCommitRenameCommand,
+  buildPatchGuard,
+  createEditingSession,
+  isEditingSessionValid,
+  type EditingSession,
+} from './editSession';
 import { NodePopover } from './NodePopover';
 import { StatusBar } from './StatusBar';
 import { Toolbar } from './Toolbar';
@@ -35,9 +44,13 @@ export interface MindMapAppProps {
   readonly parseResult: ParseResult;
   readonly themeMode: ResolvedThemeMode;
   readonly rainbowBranches: boolean;
+  readonly imeGuardWindowMs: number;
   readonly messages: Messages;
   readonly onOpenMarkdown: (line?: number) => void;
   readonly onOpenLink: (link: TopicLink, newTab: boolean) => void;
+  readonly onDispatchCommand?: (command: SemanticCommand) => Promise<CommandDispatchOutcome>;
+  readonly onRegisterEditSelectedTrigger?: (trigger: (() => boolean) | null) => void;
+  readonly onNotify?: (message: string) => void;
 }
 
 function computeFitCamera(bounds: LayoutBounds, size: ViewportSize): CameraState {
@@ -67,15 +80,20 @@ export function MindMapApp({
   parseResult,
   themeMode,
   rainbowBranches,
+  imeGuardWindowMs,
   messages,
   onOpenMarkdown,
   onOpenLink,
+  onDispatchCommand,
+  onRegisterEditSelectedTrigger,
+  onNotify,
 }: MindMapAppProps) {
   const palette = useMemo(() => getThemePalette(themeMode), [themeMode]);
 
   const doc = parseResult.status === 'ok' ? parseResult.document : null;
 
   const [selectedId, setSelectedId] = useState<string | null>(doc?.rootId ?? null);
+  const [editingSession, setEditingSession] = useState<EditingSession | null>(null);
   const [baseCollapsedIds, setBaseCollapsedIds] = useState<ReadonlySet<string>>(() => new Set());
   const [userOpenedDuringFilterIds, setUserOpenedDuringFilterIds] = useState<ReadonlySet<string>>(
     () => new Set(),
@@ -85,9 +103,15 @@ export function MindMapApp({
   const [popoverOpen, setPopoverOpen] = useState(false);
   const [camera, setCamera] = useState<CameraState>({ x: 480, y: 320, zoom: 1 });
 
+  const rootRef = useRef<HTMLDivElement | null>(null);
+  const filePathRef = useRef(filePath);
+  filePathRef.current = filePath;
+  const docRef = useRef(doc);
+  docRef.current = doc;
   const viewportSizeRef = useRef<ViewportSize>({ width: 960, height: 640 });
   const hasInitialFitRef = useRef(false);
   const filterInputRef = useRef<HTMLInputElement | null>(null);
+  const isCommandInFlightRef = useRef(false);
 
   // Reset per-note view state when switching to a different Markdown file
   useEffect(() => {
@@ -97,6 +121,7 @@ export function MindMapApp({
     setFocusMode({ kind: 'off' });
     setFilterQuery('');
     setPopoverOpen(false);
+    setEditingSession(null);
     setSelectedId(null);
   }, [filePath]);
 
@@ -108,6 +133,10 @@ export function MindMapApp({
     }
     return doc.rootId;
   }, [doc, selectedId]);
+
+  const effectiveEditingSession = useMemo(() => {
+    return isEditingSessionValid(editingSession, filePath, doc) ? editingSession : null;
+  }, [editingSession, filePath, doc]);
 
   const visibility = useMemo(() => {
     if (!doc) return null;
@@ -237,8 +266,118 @@ export function MindMapApp({
     });
   }, []);
 
+  const dispatchAndFocus = useCallback(
+    async (
+      command: SemanticCommand,
+      openInlineEditorAfter: boolean,
+      expandParentId?: string,
+    ): Promise<void> => {
+      if (!onDispatchCommand || isCommandInFlightRef.current) return;
+      const startedFilePath = filePathRef.current;
+      isCommandInFlightRef.current = true;
+      try {
+        const outcome = await onDispatchCommand(command);
+        if (filePathRef.current !== startedFilePath) {
+          return;
+        }
+        if (outcome.accepted && outcome.focusNodeId !== undefined) {
+          if (expandParentId !== undefined) {
+            setBaseCollapsedIds((prev) => {
+              if (!prev.has(expandParentId)) return prev;
+              const next = new Set(prev);
+              next.delete(expandParentId);
+              return next;
+            });
+          }
+          setSelectedId(outcome.focusNodeId);
+          if (openInlineEditorAfter && outcome.nextDocument !== undefined) {
+            const focusedNode = outcome.nextDocument.nodes.get(outcome.focusNodeId);
+            if (focusedNode) {
+              setPopoverOpen(false);
+              setEditingSession(
+                createEditingSession(startedFilePath, outcome.nextDocument, focusedNode),
+              );
+            }
+          }
+        }
+      } finally {
+        isCommandInFlightRef.current = false;
+      }
+    },
+    [onDispatchCommand],
+  );
+
+  const handleStartEdit = useCallback(
+    (nodeId: string) => {
+      if (!doc) return;
+      if (!onDispatchCommand || doc.readOnlyReasons.length > 0) {
+        setSelectedId(nodeId);
+        setPopoverOpen(true);
+        return;
+      }
+      const node = doc.nodes.get(nodeId);
+      if (!node) return;
+      setPopoverOpen(false);
+      setSelectedId(nodeId);
+      setEditingSession(createEditingSession(filePath, doc, node));
+    },
+    [doc, filePath, onDispatchCommand],
+  );
+
+  const handleDiscardEdit = useCallback(
+    (unsavedValue: string) => {
+      onNotify?.(`${messages.edit.unsavedInputDiscarded}${unsavedValue}`);
+    },
+    [messages, onNotify],
+  );
+
+  const handleCommitEdit = useCallback(
+    (session: EditingSession, nextTitle: string) => {
+      setEditingSession(null);
+      rootRef.current?.focus();
+      if (!onDispatchCommand) return;
+      const command = buildCommitRenameCommand(session, filePathRef.current, nextTitle);
+      if (command === null) {
+        return;
+      }
+      // The note changed after editing began (e.g. a blur fired while the editor was being
+      // removed): the write would be rejected as stale, so hand the typed text back instead.
+      if (!isEditingSessionValid(session, filePathRef.current, docRef.current)) {
+        handleDiscardEdit(nextTitle);
+        return;
+      }
+      void dispatchAndFocus(command, false);
+    },
+    [onDispatchCommand, dispatchAndFocus, handleDiscardEdit],
+  );
+
+  const handleCancelEdit = useCallback(() => {
+    setEditingSession(null);
+    rootRef.current?.focus();
+  }, []);
+
+  const editSelectedTriggerRef = useRef<() => boolean>(() => false);
+  editSelectedTriggerRef.current = (): boolean => {
+    if (!doc || !layout) return false;
+    if (effectiveEditingSession !== null) return false;
+    if (effectiveSelectedId === null) return false;
+    handleStartEdit(effectiveSelectedId);
+    return true;
+  };
+
+  useEffect(() => {
+    if (!onRegisterEditSelectedTrigger) return;
+    const trigger = (): boolean => editSelectedTriggerRef.current();
+    onRegisterEditSelectedTrigger(trigger);
+    return () => {
+      onRegisterEditSelectedTrigger(null);
+    };
+  }, [onRegisterEditSelectedTrigger]);
+
   const handleKeyDown = (event: KeyboardEvent<HTMLDivElement>): void => {
+    if (event.defaultPrevented) return;
     if (!doc || !layout) return;
+    if (effectiveEditingSession !== null) return;
 
     if (event.key === 'Escape') {
       if (popoverOpen) {
@@ -262,6 +401,10 @@ export function MindMapApp({
       return;
     }
 
+    if (event.nativeEvent.isComposing || event.nativeEvent.keyCode === 229) {
+      return;
+    }
+
     // Zoom fit shortcut (Cmd/Ctrl + 0)
     if ((event.metaKey || event.ctrlKey) && event.key === '0') {
       event.preventDefault();
@@ -278,6 +421,52 @@ export function MindMapApp({
 
     if (event.metaKey || event.ctrlKey || event.altKey) {
       return;
+    }
+
+    if (event.key === 'F2' && effectiveSelectedId !== null) {
+      event.preventDefault();
+      handleStartEdit(effectiveSelectedId);
+      return;
+    }
+
+    if (
+      event.key === 'Tab' &&
+      !event.shiftKey &&
+      effectiveSelectedId !== null &&
+      onDispatchCommand
+    ) {
+      const targetNode = doc.nodes.get(effectiveSelectedId);
+      if (targetNode) {
+        event.preventDefault();
+        void dispatchAndFocus(
+          {
+            type: 'insertChild',
+            guard: buildPatchGuard(doc, targetNode),
+            title: messages.edit.newTopicTitle,
+            position: 'end',
+          },
+          true,
+          targetNode.id,
+        );
+        return;
+      }
+    }
+
+    if (event.key === 'Enter' && effectiveSelectedId !== null && onDispatchCommand) {
+      const targetNode = doc.nodes.get(effectiveSelectedId);
+      if (targetNode) {
+        event.preventDefault();
+        void dispatchAndFocus(
+          {
+            type: 'insertSibling',
+            guard: buildPatchGuard(doc, targetNode),
+            title: messages.edit.newTopicTitle,
+            placement: event.shiftKey ? 'before' : 'after',
+          },
+          true,
+        );
+        return;
+      }
     }
 
     const arrowMap: Record<string, ArrowDirection> = {
@@ -319,7 +508,7 @@ export function MindMapApp({
       setPopoverOpen((prev) => !prev);
     }
 
-    // TODO: [M2 Classic Keymap 編集] - Tab / Enter / Shift+Enter / Shift+Tab / F2 / Delete / Cmd+Arrow / Cmd+Z を ImeGuard + FileCoordinator へ接続する
+    // TODO: [M2-b Classic Keymap 拡張] - Shift+Tab / Delete / Cmd+Arrow / Cmd+Z を FileCoordinator へ接続する
   };
 
   // Fail-closed blocked screen
@@ -346,6 +535,7 @@ export function MindMapApp({
 
   return (
     <div
+      ref={rootRef}
       className={`ito-root ito-theme-${themeMode}`}
       tabIndex={0}
       onKeyDown={handleKeyDown}
@@ -374,6 +564,9 @@ export function MindMapApp({
           layout={layout}
           camera={camera}
           selectedId={effectiveSelectedId}
+          editingSession={effectiveEditingSession}
+          imeGuardWindowMs={imeGuardWindowMs}
+          inlineEditorLabel={messages.edit.inlineEditorLabel}
           dimmedNodeIds={visibility.dimmedNodeIds}
           matchedNodeIds={visibility.matchedNodeIds}
           effectiveCollapsedIds={visibility.effectiveCollapsedIds}
@@ -383,7 +576,10 @@ export function MindMapApp({
           onViewportResize={handleViewportResize}
           onSelectNode={(id) => {
             setSelectedId(id);
-            if (id === null) setPopoverOpen(false);
+            if (id === null) {
+              setPopoverOpen(false);
+              setEditingSession(null);
+            }
           }}
           onToggleCollapse={handleToggleCollapse}
           onOpenPopover={(id) => {
@@ -391,6 +587,10 @@ export function MindMapApp({
             setPopoverOpen(true);
           }}
           onOpenLink={onOpenLink}
+          onStartEdit={handleStartEdit}
+          onCommitEdit={handleCommitEdit}
+          onCancelEdit={handleCancelEdit}
+          onDiscardEdit={handleDiscardEdit}
         />
 
         {popoverOpen && selectedNode !== null && (
@@ -408,6 +608,7 @@ export function MindMapApp({
       <StatusBar
         document={doc}
         messages={messages}
+        canEdit={onDispatchCommand !== undefined}
         filterActive={visibility.filterActive}
         matchCount={visibility.matchedNodeIds.size}
       />
