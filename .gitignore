@@ -1,4 +1,10 @@
 node_modules/
-packages/core/dist/
-dist/
 main.js
+*.map
+.DS_Store
+dist/
+coverage/
+.env
+*.log
+data.json
+
