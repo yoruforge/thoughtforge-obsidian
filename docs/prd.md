@@ -1,8 +1,8 @@
-# ThoughtForge（`thoughtforge-obsidian`）企画書・要件定義書（PRD v0.3）
+# ThoughtForge（`thoughtforge-obsidian`）企画書・要件定義書（PRD v0.4）
 
 > [!NOTE]
-> 本ドキュメントは新規独立 Obsidian プラグイン **ThoughtForge**（リポジトリ: `thoughtforge-obsidian`）の【フェーズ1: 計画】確定版です。保存方式は **Markdown 正本（「ノートがそのまま地図」・最小差分・色や座標はノートに書かない）**、UI スタックは **HTML + SVG ハイブリッド ＋ React**、トピックノート本文は **地図ポップオーバーからも直接編集可能**、配布は **Obsidian Community Plugin 公開基準準拠** を前提とします。
-> なお、本プロジェクトは **iThoughts（iThoughtsX）** のキーボード中心の操作感に敬意を表して設計した独立オープンソースプロジェクトであり、iThoughts / toketaWare とは無関係・非提携です。記載の製品名は各権利者の商標または登録商標です。
+> 本ドキュメントは新規独立 Obsidian プラグイン **ThoughtForge**（リポジトリ: `thoughtforge-obsidian`）の【フェーズ1: 計画】正本です。保存方式は **Markdown 正本（「ノートがそのまま地図」・最小差分・色や座標はノートに書かない）**、UI スタックは **HTML + SVG ハイブリッド ＋ React**、トピックノート本文は **地図ポップオーバーからも直接編集可能**、配布は **Obsidian Community Plugin 公開基準準拠** を前提とします。
+> なお、本プロジェクトは **iThoughts（iThoughtsX）** のキーボード中心の操作感に敬意を表して設計した独立オープンソースプロジェクトであり、iThoughts / toketaWare とは無関係・非提携です。記載の製品名は各権利者の商標または登録商標です。YouTube 動画 10 件の機能・UI/UX・デザイン分析の詳細は [ithoughts-youtube-analysis.md](./ithoughts-youtube-analysis.md) を参照してください。
 
 ---
 
@@ -57,21 +57,25 @@ frontmatter、フェンス／インデントコードブロック、表、引用
 
 ## 3. 機能一覧と MVP スコープ
 
-- **Phase 1（MVP：M0〜M3）**：マップビュー起動、Markdown 並置・ソース行ジャンプ、Classic Keymap 全操作、マウス/D&D、枝コピペ、Undo/Redo、日本語 IME ガード、未確定入力の下書き退避（タイトル＋ノート）、折りたたみ・深度 `0〜9`、Zoom/Pan/Fit、Focus（固定/追従）、Quick Filter、左右自動レイアウト＆階層 0〜9 テーマ・レインボー配色、トピックノート閲覧・ポップオーバー直接編集、リンク起動、コマンドパレット登録。
-- **Phase 2（Obsidian 強化：M4）**：リンクによる地図間移動＆履歴バック、Backlinks カード、画像 `![[ ]]`・タグ `#tag`、カーソル位置から地図へ、枝のノート切り出し。
-- **Phase 3（拡張：M5）**：SVG/PNG/OPML 出力、`.itmz` 片方向インポート、チェックボックス・関係線・Canvas 出力、プレゼン・モバイル検討。
-- **対象外**：自由座標保存、タスク属性・カレンダー、手書き Doodle、内蔵 Web リサーチ、独自同期/共有、Office 出力、常設 Outline/右パネル。
+- **Phase 1（MVP：M0〜M3）**：
+  - **閲覧＆レイアウト・ビジュアル（M1 / M2-ui）**：マップビュー起動、Markdown 並置・ソース行ジャンプ、レイアウト切替（左右バランス / 右片側 / トップダウン組織図）、階層 0〜9 テーマ・テーパード有機曲線＆下線ベースライン接続・パステルティント／ワイヤーフレーム／モノクロカラーモード・レインボー配色・背景グリッド、マップ内 Quick Style Popover、折りたたみ（`.`）・深度 `0〜9`、Zoom/Pan/全体フィット・選択フィット（`⌘⇧0`）・選択ノード自動追従、Focus（固定/追従）、Quick Filter＋Markdown 由来構造化フィルタ（ノート有・タスク状態・リンク・`#tag`・保全ブロック）、SVG バッジ＆ノートホバークイックプレビュー、非破壊トピック番号付け表示、語数・ズーム・Styles 統合ステータスバー、リンク起動、コマンドパレット登録。
+  - **双方向編集＆安全保護（M2-a〜M2-c / M3）**：Classic Keymap 全操作（`F2`・`Tab`・`Enter`・`Shift+Enter`・`Shift+Tab` 新親・`Delete` 枝削除・`Cmd+Backspace` 子昇格削除・`Cmd+Arrow` 並替/昇降・`Cmd+Enter` 分割・`Cmd+Shift+T` ノート編集・`Cmd+Z/Shift+Z` Undo/Redo）、タスク `[ ]`↔`[x]` クリックトグル、マウス/D&D 再配置・並替、枝コピペ、日本語 IME ガード、未保存 Markdown 競合保護、未確定入力の下書き退避（タイトル＋ノート）、トピックノート直接編集。
+- **Phase 2（Obsidian 強化：M4）**：リンクによる地図間移動＆履歴バック、Backlinks カード、画像 `![[ ]]` サムネイル・タグ `#tag` 連携、カーソル位置から地図へ、枝のノート切り出し、`NodeMetadataProvider` サイドカーによる非破壊視覚拡張（Boundary / Relationship / 個別色・アイコンの検討。Markdown 本文へは書かない）。
+- **Phase 3（拡張：M5）**：ブランチ順の簡易プレゼンテーションモード（全体→各主要枝の滑らかなズーム遷移）、SVG/PNG/OPML 出力、`.itmz` 片方向インポート、Canvas 出力、モバイル検討。
+- **対象外**：Markdown への自由座標・色・形保存、独自タスク属性（Effort/Cost/Resources/Rollup 等）の独自書式書込み、手書き Doodle、内蔵 Web リサーチ、独自同期/共有、Office 出力、常設 Outline/右パネル。
 
 ---
 
 ## 4. マイルストーン
 
-- **M0**：基盤＆技術スパイク（環境・ビルド・Lint・テスト構築）
-- **M1**：閲覧 MVP（通常 `.md` パーサー、Fail-Closed、左右レイアウト、階層テーマ、折りたたみ/深度、Focus/Filter、Zoom/Pan、ポップオーバー閲覧、ソース行ジャンプ）
-- **M2**：双方向編集 MVP（最小差分パッチ、Dry-Run 再解析、`vault.process` CAS 照合、Classic Keymap、日本語 IME ガード、トピックノート直接編集、Undo/Redo）
-- **M3**：実用化・安全強化（下書き退避・回復、枝コピペ、実機受入テスト）
-- **M4**：Obsidian 強化（Vault 連携）
-- **M5**：拡張（エクスポート・`.itmz` インポート等）
+- **M0**：基盤＆技術スパイク（環境・ビルド・Lint・テスト構築）— **完了**
+- **M1**：閲覧 MVP（通常 `.md` パーサー、Fail-Closed、左右レイアウト、階層テーマ、折りたたみ/深度、Focus/Filter、Zoom/Pan、ポップオーバー閲覧、ソース行ジャンプ）— **完了（PR #1）**
+- **M2-a**：最小編集スライス（最小差分パッチ `rename`/`insertChild`/`insertSibling`、Dry-Run 再解析、`vault.process` CAS 照合、未保存 Markdown 競合保護、日本語 IME ガード、`View.scope` `F2`）— **実装＆実機検証完了（PR #2）**
+- **M2-ui**：Visual Design & UI/UX Polish（iThoughts 動画 10 件分析の表現層・UI 踏襲：テーパード曲線、下線接続、カラーモード・レイアウト・グリッド、Quick Style Popover、ノートホバープレビュー、構造化フィルタ、SVG バッジ、選択自動追従、非破壊トピック番号付け）
+- **M2-b**：Classic Keymap 拡張＆トピックノート直接編集（`Shift+Tab` / `Delete` / `Cmd+Backspace` / `Cmd+Arrow` / `Cmd+Enter` / Undo・Redo / `NodePopover` 直接編集 / タスクチェックボックス切替）
+- **M2-c / M3**：実用化・安全強化（D&D 再配置・並替、枝コピペ、下書き退避・回復、実機受入テスト）
+- **M4**：Obsidian 強化（Vault 連携・非破壊サイドカー視覚拡張検討）
+- **M5**：拡張（簡易プレゼンテーション・エクスポート・`.itmz` インポート等）
 
 ---
 
