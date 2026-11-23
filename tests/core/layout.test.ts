@@ -221,11 +221,13 @@ describe('layout engine', () => {
     expect(monoBranch).toBe(dark.monochromeAccent);
   });
 
-  it('reserves width/height for numbering labels and tag pills on Japanese sibling headings without overlap', () => {
+  it('reserves width/height for numbering labels and repeated tag pills without sibling overlap', () => {
     const md = [
       '# ルート',
       '## 日本語の見出しです',
       '## 日本語の見出しです',
+      '## #a #a #a #a #a #a',
+      '## 次の見出し',
       '- 長い日本語の見出しと複数のタグを含むトピック #設計 #重要',
       '- 次の兄弟トピック',
     ].join('\n');
@@ -243,17 +245,25 @@ describe('layout engine', () => {
     });
 
     const firstHeading = [...doc.nodes.values()].find((n) => n.titleRaw === '日本語の見出しです');
+    const repeatedTagHeading = [...doc.nodes.values()].find(
+      (n) => n.titleRaw === '#a #a #a #a #a #a',
+    );
     expect(firstHeading).toBeDefined();
-    if (!firstHeading) return;
+    expect(repeatedTagHeading).toBeDefined();
+    if (!firstHeading || !repeatedTagHeading) return;
 
     const unnumberedNode = unnumbered.nodes.get(firstHeading.id);
     const numberedNode = numbered.nodes.get(firstHeading.id);
+    const repeatedTagNode = numbered.nodes.get(repeatedTagHeading.id);
     expect(unnumberedNode).toBeDefined();
     expect(numberedNode).toBeDefined();
-    if (!unnumberedNode || !numberedNode) return;
+    expect(repeatedTagNode).toBeDefined();
+    if (!unnumberedNode || !numberedNode || !repeatedTagNode) return;
 
     // Numbering adds reserved width so Japanese heading does not unexpectedly wrap & collide
     expect(numberedNode.width).toBeGreaterThan(unnumberedNode.width);
+    // Six repeated #a pills reserve multi-line height when exceeding single-line capacity
+    expect(repeatedTagNode.height).toBeGreaterThanOrEqual(54);
 
     // Verify zero pairwise overlap across all placed nodes
     const placed = [...numbered.nodes.values()];

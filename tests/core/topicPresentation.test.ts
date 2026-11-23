@@ -6,6 +6,7 @@ import {
   computeDocumentTextStats,
   computeSubtreeBounds,
   computeTopicNumbering,
+  countRenderedTopicTags,
   extractTopicTags,
   tokenizeTopicTitle,
 } from '../../src/core/view/topicPresentation';
@@ -79,6 +80,10 @@ describe('topicPresentation (M2-ui helpers)', () => {
     expect(noH1.status).toBe('ok');
     if (noH1.status !== 'ok') return;
     expect(collectDocumentTags(noH1.document)).toEqual(['#real']);
+
+    // Duplicate tags: filter extraction deduplicates, while rendered tag counter preserves all pills
+    expect(extractTopicTags('#a #a #a #a #a #a')).toEqual(['#a']);
+    expect(countRenderedTopicTags('#a #a #a #a #a #a')).toBe(6);
   });
 
   it('computes document word/char stats and subtree bounds for Fit Selection', () => {

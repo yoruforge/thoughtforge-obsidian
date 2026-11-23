@@ -9,7 +9,7 @@ import type {
   MindMapDocument,
   TopicNode,
 } from '../model';
-import { extractTopicTags } from '../view/topicPresentation';
+import { countRenderedTopicTags } from '../view/topicPresentation';
 import { assignMainBranchSides } from './balance';
 import { resolveLevelStyle } from './theme';
 
@@ -105,9 +105,10 @@ export const defaultNodeSizeMeasurer: NodeSizeMeasurer = {
         ? Math.ceil(estimateTextUnits(numberLabel) * (style.fontSizePx * 0.82)) + 16
         : 0;
 
-    // Inline #tag pills add horizontal pill padding (12px) + margin (4px) per tag
+    // Inline #tag pills add horizontal pill padding (12px) + margin (4px) per rendered pill
+    // (must count duplicates too, unlike deduplicated filter chip extraction).
     const tagCount =
-      node.kind === 'central-virtual' ? 0 : extractTopicTags(node.titleRaw).length;
+      node.kind === 'central-virtual' ? 0 : countRenderedTopicTags(node.titleRaw);
     const tagExtraWidth = tagCount * 16;
 
     // Small safety margin for cross-platform font metric variance (macOS/Windows/Linux CJK)

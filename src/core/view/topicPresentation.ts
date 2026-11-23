@@ -158,7 +158,21 @@ export function computeTopicNumbering(
 }
 
 /**
- * Extracts Obsidian-style inline tags (#tag) from a topic title using the exact same
+ * Counts total rendered inline tag pills in a topic title (preserving duplicates)
+ * so layout width/wrapping calculations reserve padding for every rendered pill.
+ */
+export function countRenderedTopicTags(titleRaw: string): number {
+  let count = 0;
+  for (const segment of tokenizeTopicTitle(titleRaw)) {
+    if (segment.kind === 'tag') {
+      count += 1;
+    }
+  }
+  return count;
+}
+
+/**
+ * Extracts unique Obsidian-style inline tags (#tag) from a topic title using the exact same
  * Markdown-aware tokenizer used for node badge/pill rendering.
  */
 export function extractTopicTags(titleRaw: string): readonly string[] {
