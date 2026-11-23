@@ -69,6 +69,17 @@ describe('viewStateRemap (O(N) index, view state, and strict selection remap)', 
     expect(twinSecond).toBeDefined();
     if (!twinSecond) return;
     expect(createDocumentRemapIndex(twinBefore, twinAfter).remapSelectedNodeId(twinSecond.id)).toBeNull();
+
+    // 5. Codex PR #12 P1-1 repro: A and B each have an identical "- メモ"; A's is selected then deleted ->
+    //    MUST NOT jump selection (or collapse state) onto B's surviving identical "- メモ"!
+    const crossBefore = parseOk('# Root\n## A\n- メモ\n## B\n- メモ\n');
+    const crossAfter = parseOk('# Root\n## A\n## B\n- メモ\n');
+    const memoABefore = [...crossBefore.nodes.values()].filter((n) => n.titleRaw === 'メモ')[0];
+    expect(memoABefore).toBeDefined();
+    if (!memoABefore) return;
+    const crossIndex = createDocumentRemapIndex(crossBefore, crossAfter);
+    expect(crossIndex.remapSelectedNodeId(memoABefore.id)).toBeNull();
+    expect(crossIndex.remapNodeId(memoABefore.id)).toBeNull();
   });
 
   it('clears fixed focus and drops collapsed entry cleanly when the anchored node is deleted', () => {
@@ -129,6 +140,32 @@ describe('viewStateRemap (O(N) index, view state, and strict selection remap)', 
     const afterB999 = [...afterDoc.nodes.values()].find((n) => n.titleRaw === 'Branch 999');
     expect(afterB0 && collapsedAfter.has(afterB0.id)).toBe(true);
     expect(afterB999 && collapsedAfter.has(afterB999.id)).toBe(true);
+    expect(elapsedMs).toBeLessThan(100);
+  });
+
+  it('stays linear O(N + K) even when 1,000 siblings under the same parent share the exact same title', () => {
+    const linesBefore = ['# Root', '## SameParent'];
+    const linesAfter = ['# Root', '## Inserted', '## SameParent'];
+    for (let i = 0; i < 1000; i += 1) {
+      linesBefore.push('- SameTitle', `  - Leaf ${i}`);
+      linesAfter.push('- SameTitle', `  - Leaf ${i}`);
+    }
+    const beforeDoc = parseOk(linesBefore.join('\n') + '\n');
+    const afterDoc = parseOk(linesAfter.join('\n') + '\n');
+    const collapsedBefore = new Set<string>();
+    for (const node of beforeDoc.nodes.values()) {
+      if (node.titleRaw === 'SameTitle') {
+        collapsedBefore.add(node.id);
+      }
+    }
+    expect(collapsedBefore.size).toBe(1000);
+
+    const t0 = performance.now();
+    const index = createDocumentRemapIndex(beforeDoc, afterDoc);
+    const collapsedAfter = index.remapNodeIdSet(collapsedBefore);
+    const elapsedMs = performance.now() - t0;
+
+    expect(collapsedAfter.size).toBe(1000);
     expect(elapsedMs).toBeLessThan(100);
   });
 });

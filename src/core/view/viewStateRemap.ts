@@ -7,7 +7,9 @@ export interface DocumentRemapIndex {
   remapNodeId(oldNodeId: string): string | null;
   /**
    * Strict fail-closed remap for the active selection (targeted by destructive commands like Delete).
-   * Never guesses by ordinal index across ambiguous identical siblings or changed duplicate counts.
+   * Never guesses by ordinal index across ambiguous identical siblings or changed duplicate counts,
+   * and only falls back across different parents when (titleRaw, ownRangeHash) is unique across
+   * BOTH the entire `beforeDoc` and the entire `afterDoc`.
    */
   remapSelectedNodeId(oldNodeId: string): string | null;
   remapNodeIdSet(ids: ReadonlySet<string>): ReadonlySet<string>;
@@ -18,8 +20,8 @@ interface IndexedDocument {
   readonly keyById: ReadonlyMap<string, string>;
   readonly groups: ReadonlyMap<string, readonly TopicNode[]>;
   readonly ordinalById: ReadonlyMap<string, number>;
+  readonly byKeyAndHash: ReadonlyMap<string, readonly TopicNode[]>;
   readonly byTitleAndHash: ReadonlyMap<string, readonly TopicNode[]>;
-  readonly sameKeyHashCountById: ReadonlyMap<string, number>;
 }
 
 function indexDocument(doc: MindMapDocument): IndexedDocument {
@@ -44,6 +46,7 @@ function indexDocument(doc: MindMapDocument): IndexedDocument {
 
   const groups = new Map<string, TopicNode[]>();
   const ordinalById = new Map<string, number>();
+  const byKeyAndHash = new Map<string, TopicNode[]>();
   const byTitleAndHash = new Map<string, TopicNode[]>();
 
   for (const node of doc.nodes.values()) {
@@ -57,6 +60,14 @@ function indexDocument(doc: MindMapDocument): IndexedDocument {
       groups.set(key, [node]);
     }
 
+    const khKey = `${key}\0${node.ownRangeHash}`;
+    const khBucket = byKeyAndHash.get(khKey);
+    if (khBucket) {
+      khBucket.push(node);
+    } else {
+      byKeyAndHash.set(khKey, [node]);
+    }
+
     const thKey = `${node.titleRaw}\0${node.ownRangeHash}`;
     const thBucket = byTitleAndHash.get(thKey);
     if (thBucket) {
@@ -66,35 +77,19 @@ function indexDocument(doc: MindMapDocument): IndexedDocument {
     }
   }
 
-  // Precompute how many nodes in the same structural bucket share the exact ownRangeHash.
-  const sameKeyHashCountById = new Map<string, number>();
-  for (const bucket of groups.values()) {
-    if (bucket.length === 1 && bucket[0]) {
-      sameKeyHashCountById.set(bucket[0].id, 1);
-      continue;
-    }
-    const counts = new Map<string, number>();
-    for (const node of bucket) {
-      counts.set(node.ownRangeHash, (counts.get(node.ownRangeHash) ?? 0) + 1);
-    }
-    for (const node of bucket) {
-      sameKeyHashCountById.set(node.id, counts.get(node.ownRangeHash) ?? 1);
-    }
-  }
-
   return {
     keyById,
     groups,
     ordinalById,
+    byKeyAndHash,
     byTitleAndHash,
-    sameKeyHashCountById,
   };
 }
 
 /**
- * Builds an O(N) lookup index once per `(beforeDoc, afterDoc)` transition so remapping
- * collapsed sets (even 1,000+ collapsed branches), fixed focus, and selection runs in O(N + K)
- * instead of O(K * N).
+ * Builds an O(N) lookup index once per `(beforeDoc, afterDoc)` transition so every lookup in
+ * `remapNodeId`, `remapSelectedNodeId`, `remapNodeIdSet`, and `remapFocusMode` is O(1) worst-case
+ * (O(N + K) total even when thousands of siblings under the same parent share identical titles).
  */
 export function createDocumentRemapIndex(
   beforeDoc: MindMapDocument,
@@ -116,6 +111,19 @@ export function createDocumentRemapIndex(
   const beforeIdx = indexDocument(beforeDoc);
   const afterIdx = indexDocument(afterDoc);
 
+  const matchGloballyUniqueCrossParent = (beforeNode: TopicNode): string | null => {
+    const thKey = `${beforeNode.titleRaw}\0${beforeNode.ownRangeHash}`;
+    const beforeGlobal = beforeIdx.byTitleAndHash.get(thKey);
+    if (!beforeGlobal || beforeGlobal.length !== 1) {
+      return null;
+    }
+    const afterGlobal = afterIdx.byTitleAndHash.get(thKey);
+    if (afterGlobal && afterGlobal.length === 1 && afterGlobal[0]) {
+      return afterGlobal[0].id;
+    }
+    return null;
+  };
+
   const remapNodeId = (oldNodeId: string): string | null => {
     if (oldNodeId === beforeDoc.rootId) {
       return afterDoc.rootId;
@@ -127,31 +135,17 @@ export function createDocumentRemapIndex(
     const afterBucket = key !== undefined ? afterIdx.groups.get(key) : undefined;
 
     if (!afterBucket || afterBucket.length === 0) {
-      // Fallback when a topic moved under another parent or an ancestor was renamed:
-      // match iff a single node in afterDoc shares both titleRaw and exact ownRangeHash.
-      const hashMatches = afterIdx.byTitleAndHash.get(
-        `${beforeNode.titleRaw}\0${beforeNode.ownRangeHash}`,
-      );
-      if (hashMatches && hashMatches.length === 1 && hashMatches[0]) {
-        return hashMatches[0].id;
-      }
-      return null;
+      return matchGloballyUniqueCrossParent(beforeNode);
     }
 
     if (afterBucket.length === 1 && afterBucket[0]) {
       return afterBucket[0].id;
     }
 
-    let hashMatch: TopicNode | null = null;
-    let hashMatchCount = 0;
-    for (const candidate of afterBucket) {
-      if (candidate.ownRangeHash === beforeNode.ownRangeHash) {
-        hashMatch = candidate;
-        hashMatchCount += 1;
-      }
-    }
-    if (hashMatchCount === 1 && hashMatch !== null) {
-      return hashMatch.id;
+    const khMatches =
+      key !== undefined ? afterIdx.byKeyAndHash.get(`${key}\0${beforeNode.ownRangeHash}`) : undefined;
+    if (khMatches && khMatches.length === 1 && khMatches[0]) {
+      return khMatches[0].id;
     }
 
     const oldOrdinal = beforeIdx.ordinalById.get(oldNodeId);
@@ -171,45 +165,29 @@ export function createDocumentRemapIndex(
     const key = beforeIdx.keyById.get(oldNodeId);
     const beforeBucket = key !== undefined ? (beforeIdx.groups.get(key) ?? []) : [];
     const afterBucket = key !== undefined ? afterIdx.groups.get(key) : undefined;
-    const beforeSameHashCount = beforeIdx.sameKeyHashCountById.get(oldNodeId) ?? 1;
+    const beforeSameKeyHashCount =
+      key !== undefined ? (beforeIdx.byKeyAndHash.get(`${key}\0${beforeNode.ownRangeHash}`)?.length ?? 0) : 0;
 
     if (!afterBucket || afterBucket.length === 0) {
-      // Only follow across parent rename / move if the topic had no identical-hash sibling before
-      // AND uniquely matches (titleRaw, ownRangeHash) in afterDoc.
-      if (beforeSameHashCount !== 1) return null;
-      const hashMatches = afterIdx.byTitleAndHash.get(
-        `${beforeNode.titleRaw}\0${beforeNode.ownRangeHash}`,
-      );
-      if (hashMatches && hashMatches.length === 1 && hashMatches[0]) {
-        return hashMatches[0].id;
-      }
-      return null;
+      // Cross-parent fallback requires document-wide uniqueness in BOTH beforeDoc and afterDoc
+      // so deleting A's "メモ" can NEVER redirect selection onto B's surviving identical "メモ".
+      return matchGloballyUniqueCrossParent(beforeNode);
     }
 
     if (afterBucket.length === 1 && afterBucket[0]) {
       if (beforeBucket.length === 1) {
-        // Unique topic at (ancestorPath, titleRaw) before AND after -> unambiguously the same topic.
         return afterBucket[0].id;
       }
-      // Multiple same-titled siblings existed before; only accept the lone survivor if the
-      // original topic had a distinct hash and that exact hash survived.
-      if (beforeSameHashCount === 1 && afterBucket[0].ownRangeHash === beforeNode.ownRangeHash) {
+      if (beforeSameKeyHashCount === 1 && afterBucket[0].ownRangeHash === beforeNode.ownRangeHash) {
         return afterBucket[0].id;
       }
       return null;
     }
 
-    // Multiple same-titled siblings in afterDoc: require unique ownRangeHash proof (never ordinal guess).
-    if (beforeSameHashCount !== 1) return null;
-    let hashMatch: TopicNode | null = null;
-    let hashMatchCount = 0;
-    for (const candidate of afterBucket) {
-      if (candidate.ownRangeHash === beforeNode.ownRangeHash) {
-        hashMatch = candidate;
-        hashMatchCount += 1;
-      }
-    }
-    return hashMatchCount === 1 && hashMatch !== null ? hashMatch.id : null;
+    // Multiple same-titled siblings in afterDoc: O(1) lookup requiring unique ownRangeHash proof.
+    if (beforeSameKeyHashCount !== 1 || key === undefined) return null;
+    const khMatches = afterIdx.byKeyAndHash.get(`${key}\0${beforeNode.ownRangeHash}`);
+    return khMatches && khMatches.length === 1 && khMatches[0] ? khMatches[0].id : null;
   };
 
   const remapNodeIdSet = (ids: ReadonlySet<string>): ReadonlySet<string> => {

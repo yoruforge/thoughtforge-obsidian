@@ -710,10 +710,8 @@ export function MindMapApp({
       input: SaveDraftInput,
       options?: {
         readonly customPersistedNotice?: string;
-        readonly reopenInlineSession?: {
-          readonly nodeId: string;
-          readonly text: string;
-        };
+        readonly reopenInlineText?: string;
+        readonly requireReloadedDocForReopen?: boolean;
       },
     ): Promise<SaveDraftResult | null> => {
       if (!onSaveDraft) return null;
@@ -724,25 +722,38 @@ export function MindMapApp({
       }
 
       // Disk persistence failed (e.g. data.json protected or write error):
-      // never claim the draft survives restart; warn clearly and keep inline input editable.
+      // never claim the draft survives restart; warn clearly and reopen the inline editor ONLY
+      // when structural identity uniquely proves the original topic in the current document.
       onNotify?.(`${messages.edit.draftPersistFailedNotice}${input.text}`);
-      const reopen = options?.reopenInlineSession;
-      if (reopen && filePathRef.current === input.filePath) {
+      const reopenText = options?.reopenInlineText;
+      if (
+        reopenText !== undefined &&
+        filePathRef.current === input.filePath &&
+        editingSessionRef.current === null
+      ) {
         const currentDoc = docRef.current;
-        const targetNode = currentDoc?.nodes.get(reopen.nodeId);
-        if (currentDoc && targetNode && currentDoc.readOnlyReasons.length === 0) {
-          setPopoverOpen(false);
-          setStylesOpen(false);
-          selectNode(targetNode.id, currentDoc, input.filePath);
-          setEditingSession(
-            createEditingSession(
-              input.filePath,
-              currentDoc,
-              targetNode,
-              reopen.text,
-              result.entry.draftId,
-            ),
-          );
+        const staleNotYetReloaded =
+          options?.requireReloadedDocForReopen === true &&
+          currentDoc?.contentHash === input.baseContentHash;
+        if (currentDoc && !staleNotYetReloaded && currentDoc.readOnlyReasons.length === 0) {
+          const resolution = resolveDraftTarget(currentDoc, result.entry);
+          if (resolution.status === 'matched') {
+            const targetNode = currentDoc.nodes.get(resolution.nodeId);
+            if (targetNode) {
+              setPopoverOpen(false);
+              setStylesOpen(false);
+              selectNode(targetNode.id, currentDoc, input.filePath);
+              setEditingSession(
+                createEditingSession(
+                  input.filePath,
+                  currentDoc,
+                  targetNode,
+                  reopenText,
+                  result.entry.draftId,
+                ),
+              );
+            }
+          }
         }
       }
       return result;
@@ -813,7 +824,6 @@ export function MindMapApp({
     (session: EditingSession, nextTitle: string) => {
       const {
         filePath: sessionFilePath,
-        nodeId: sessionNodeId,
         initialTitleRaw,
         targetHeaderLine,
         targetAncestorPath,
@@ -877,7 +887,10 @@ export function MindMapApp({
               baseContentHash: guard.expectedContentHash,
               text: nextTitle,
             },
-            { reopenInlineSession: { nodeId: sessionNodeId, text: nextTitle } },
+            {
+              reopenInlineText: nextTitle,
+              requireReloadedDocForReopen: outcome.rejectCode === 'stale-target',
+            },
           );
         }
       });
@@ -1129,7 +1142,6 @@ export function MindMapApp({
     (session: EditingSession, leftTitle: string, rightTitle: string, fullValue: string) => {
       const {
         filePath: sessionFilePath,
-        nodeId: sessionNodeId,
         initialTitleRaw,
         targetHeaderLine,
         targetAncestorPath,
@@ -1144,6 +1156,7 @@ export function MindMapApp({
       const rescueFullInput = (
         customPersistedNotice?: string,
         reopenOnPersistFailure = false,
+        requireReloadedDocForReopen = false,
       ): void => {
         if (onSaveDraft && fullValue.trim().length > 0) {
           void saveDraftAndNotify(
@@ -1160,9 +1173,8 @@ export function MindMapApp({
             },
             {
               customPersistedNotice,
-              reopenInlineSession: reopenOnPersistFailure
-                ? { nodeId: sessionNodeId, text: fullValue }
-                : undefined,
+              reopenInlineText: reopenOnPersistFailure ? fullValue : undefined,
+              requireReloadedDocForReopen,
             },
           );
         } else if (customPersistedNotice) {
@@ -1197,7 +1209,7 @@ export function MindMapApp({
             void onDeleteDraft?.(restoredDraftId);
           }
         } else if (outcome.rejectCode !== 'boundary-no-op') {
-          rescueFullInput(undefined, true);
+          rescueFullInput(undefined, true, outcome.rejectCode === 'stale-target');
         }
       });
     },

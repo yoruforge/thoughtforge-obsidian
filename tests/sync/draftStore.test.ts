@@ -661,4 +661,114 @@ describe('DraftStore (M2-c field:title|note persistence & fail-closed resolution
     expect(res2.persisted).toBe(true);
     expect(store.getUnpersistedDraftIds().size).toBe(0);
   });
+
+  it('serializes concurrent saves and keeps newer failed draft marked unpersisted when an earlier save succeeds (PR #12 P2)', async () => {
+    const writtenSnapshots: Array<readonly string[]> = [];
+    const firstGate: { release: ((ok: boolean) => void) | null } = { release: null };
+    let resolveStarted!: () => void;
+    const firstStarted = new Promise<void>((resolve) => {
+      resolveStarted = resolve;
+    });
+    let callCount = 0;
+
+    const store = new DraftStore(
+      [],
+      async (snapshot) => {
+        callCount += 1;
+        if (callCount === 1) {
+          const ok = await new Promise<boolean>((resolve) => {
+            firstGate.release = resolve;
+            resolveStarted();
+          });
+          if (ok) {
+            writtenSnapshots.push(snapshot.map((d) => d.text));
+          }
+          return ok;
+        }
+        // Second serialized write (containing A + B) fails!
+        return false;
+      },
+      'dev-concurrent',
+    );
+
+    const pA = store.saveDraft({
+      filePath: 'notes/c.md',
+      field: 'note',
+      targetTitleRaw: 'A',
+      baseContentHash: 'h1',
+      text: 'Draft A',
+    });
+    const pB = store.saveDraft({
+      filePath: 'notes/c.md',
+      field: 'note',
+      targetTitleRaw: 'B',
+      baseContentHash: 'h1',
+      text: 'Draft B',
+    });
+
+    await firstStarted;
+    // Release first write (snapshot [A]) as successful; second write ([A, B]) runs next and fails
+    expect(firstGate.release).not.toBeNull();
+    firstGate.release?.(true);
+    const [resA, resB] = await Promise.all([pA, pB]);
+
+    expect(resA.persisted).toBe(true);
+    expect(resB.persisted).toBe(false);
+    expect(writtenSnapshots).toEqual([['Draft A']]);
+    expect(store.isDraftPersisted(resA.entry.draftId)).toBe(true);
+    expect(store.isDraftPersisted(resB.entry.draftId)).toBe(false);
+    expect(store.getUnpersistedDraftIds().has(resB.entry.draftId)).toBe(true);
+    expect(store.getUnpersistedDraftIds().has(resA.entry.draftId)).toBe(false);
+  });
+
+  it('keeps the same draft marked unpersisted when v1 succeeds while a newer v2 update fails', async () => {
+    const firstGate: { release: ((ok: boolean) => void) | null } = { release: null };
+    let resolveStarted!: () => void;
+    const firstStarted = new Promise<void>((resolve) => {
+      resolveStarted = resolve;
+    });
+    let callCount = 0;
+
+    const store = new DraftStore(
+      [],
+      async () => {
+        callCount += 1;
+        if (callCount === 1) {
+          return new Promise<boolean>((resolve) => {
+            firstGate.release = resolve;
+            resolveStarted();
+          });
+        }
+        return false;
+      },
+      'dev-same-draft',
+    );
+
+    const pV1 = store.saveDraft({
+      filePath: 'notes/d.md',
+      field: 'title',
+      targetTitleRaw: 'Topic',
+      targetHeaderLine: 2,
+      baseContentHash: 'h1',
+      text: 'v1',
+    });
+    const pV2 = store.saveDraft({
+      filePath: 'notes/d.md',
+      field: 'title',
+      targetTitleRaw: 'Topic',
+      targetHeaderLine: 2,
+      baseContentHash: 'h1',
+      text: 'v2',
+    });
+
+    await firstStarted;
+    firstGate.release?.(true);
+    const [resV1, resV2] = await Promise.all([pV1, pV2]);
+
+    expect(resV1.entry.draftId).toBe(resV2.entry.draftId);
+    expect(resV1.persisted).toBe(true);
+    expect(resV2.persisted).toBe(false);
+    expect(store.isDraftPersisted(resV2.entry.draftId)).toBe(false);
+    expect(store.getUnpersistedDraftIds().has(resV2.entry.draftId)).toBe(true);
+  });
 });
