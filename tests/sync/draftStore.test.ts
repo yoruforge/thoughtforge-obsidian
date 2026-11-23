@@ -26,7 +26,9 @@ describe('DraftStore (M2-c field:title|note persistence & fail-closed resolution
       field: 'note',
       targetTitleRaw: 'Topic A',
       targetHeaderLine: 2,
+      targetOwnRangeHash: 'own-a',
       targetAncestorPath: ['Root'],
+      targetHadIdenticalSibling: false,
       baseContentHash: 'hash1',
       text: 'Unsaved paragraph 1',
     });
@@ -34,13 +36,15 @@ describe('DraftStore (M2-c field:title|note persistence & fail-closed resolution
     expect(d1.deviceId).toBe('dev-test');
     expect(store.listDraftsForFile('notes/a.md')).toHaveLength(1);
 
-    // Upsert same (filePath, field, targetTitleRaw, ancestorPath, headerLine) updates text
+    // Upsert same (filePath, field, targetTitleRaw, ancestorPath, ownRangeHash, headerLine) updates text
     const d1Updated = await store.saveDraft({
       filePath: 'notes/a.md',
       field: 'note',
       targetTitleRaw: 'Topic A',
       targetHeaderLine: 2,
+      targetOwnRangeHash: 'own-a',
       targetAncestorPath: ['Root'],
+      targetHadIdenticalSibling: false,
       baseContentHash: 'hash2',
       text: 'Unsaved paragraph 2',
     });
@@ -134,6 +138,7 @@ describe('DraftStore (M2-c field:title|note persistence & fail-closed resolution
       targetHeaderLine: memoB0.headerLine,
       targetOwnRangeHash: memoB0.ownRangeHash,
       targetAncestorPath: buildAncestorPath(initialDoc, memoB0),
+      targetHadIdenticalSibling: hasIdenticalStructuralSibling(initialDoc, memoB0),
       baseContentHash: initialDoc.contentHash,
       text: 'B draft text',
     });
@@ -475,5 +480,126 @@ describe('DraftStore (M2-c field:title|note persistence & fail-closed resolution
       status: 'ambiguous',
       candidateNodeIds: [uniqueAfter.id],
     });
+  });
+
+  it('fails closed on PR #6 legacy drafts missing targetHadIdenticalSibling after document changes', async () => {
+    // Codex PR #7 follow-up P1 repro:
+    // 1. PR #6 saved a draft on 2nd of two identical "メモ" siblings (so targetHadIdenticalSibling is undefined!)
+    const beforeMd = [
+      '# Root',
+      '## Parent',
+      '- メモ',
+      '  Same body',
+      '- メモ',
+      '  Same body',
+      '',
+    ].join('\n');
+    const parsedBefore = parseMarkdownToMap(beforeMd, 'Root');
+    if (parsedBefore.status !== 'ok') throw new Error('parse failed');
+    const beforeMemos = [...parsedBefore.document.nodes.values()].filter(
+      (n) => n.titleRaw === 'メモ',
+    );
+    expect(beforeMemos).toHaveLength(2);
+    const secondBefore = beforeMemos[1];
+    if (!secondBefore) throw new Error('missing 2nd memo');
+
+    const legacyPr6Draft: DraftEntry = {
+      draftId: 'd-pr6-legacy',
+      deviceId: 'dev-pr6',
+      filePath: 'notes/pr6-upgrade.md',
+      field: 'note',
+      targetTitleRaw: secondBefore.titleRaw,
+      targetHeaderLine: secondBefore.headerLine,
+      targetOwnRangeHash: secondBefore.ownRangeHash,
+      targetAncestorPath: buildAncestorPath(parsedBefore.document, secondBefore),
+      // targetHadIdenticalSibling intentionally omitted (PR #6 schema!)
+      baseContentHash: parsedBefore.document.contentHash,
+      text: 'PR #6 draft for 2nd memo',
+      savedAt: 1000,
+    };
+
+    // Unchanged document still matches the exact 2nd sibling cleanly by headerLine
+    expect(resolveDraftTarget(parsedBefore.document, legacyPr6Draft)).toEqual({
+      status: 'matched',
+      nodeId: secondBefore.id,
+    });
+
+    // 2. Rename 2nd "メモ" -> "改名" (and shift 1st "メモ" onto 2nd's original headerLine 4!)
+    const afterMd = [
+      '# Root',
+      '',
+      '',
+      '## Parent',
+      '- メモ',
+      '  Same body',
+      '- 改名',
+      '  Same body',
+      '',
+    ].join('\n');
+    const parsedAfter = parseMarkdownToMap(afterMd, 'Root');
+    if (parsedAfter.status !== 'ok') throw new Error('parse failed');
+    const survivingFirst = [...parsedAfter.document.nodes.values()].find(
+      (n) => n.titleRaw === 'メモ',
+    );
+    if (!survivingFirst) throw new Error('missing surviving 1st memo');
+    expect(survivingFirst.headerLine).toBe(secondBefore.headerLine); // Same line 4!
+    expect(survivingFirst.ownRangeHash).toBe(secondBefore.ownRangeHash); // Same ownRangeHash!
+
+    // MUST fail closed to 'ambiguous' (never auto-fill into surviving 1st "メモ"!)
+    expect(resolveDraftTarget(parsedAfter.document, legacyPr6Draft)).toEqual({
+      status: 'ambiguous',
+      candidateNodeIds: [survivingFirst.id],
+    });
+    expect(resolveDraftNodeId(parsedAfter.document, legacyPr6Draft)).toBeNull();
+
+    // 3. Verify DraftStore upsert & deleteMatchingDraft also protect the PR #6 draft across changed doc!
+    const store = new DraftStore([legacyPr6Draft], async () => undefined, 'dev-pr7');
+
+    // Saving a new draft on surviving 1st "メモ" (even on shifted line 4!) must NOT overwrite PR #6 draft
+    const firstNewDraft = await store.saveDraft({
+      filePath: 'notes/pr6-upgrade.md',
+      field: 'note',
+      targetTitleRaw: survivingFirst.titleRaw,
+      targetHeaderLine: survivingFirst.headerLine,
+      targetOwnRangeHash: survivingFirst.ownRangeHash,
+      targetAncestorPath: buildAncestorPath(parsedAfter.document, survivingFirst),
+      targetHadIdenticalSibling: hasIdenticalStructuralSibling(parsedAfter.document, survivingFirst),
+      baseContentHash: parsedAfter.document.contentHash,
+      text: 'New draft for 1st memo',
+    });
+    expect(firstNewDraft.draftId).not.toBe(legacyPr6Draft.draftId);
+    expect(store.listDraftsForFile('notes/pr6-upgrade.md')).toHaveLength(2);
+
+    // Committing surviving 1st "メモ" deletes ONLY 1st's new draft, leaving PR #6 draft untouched
+    await store.deleteMatchingDraft(
+      'notes/pr6-upgrade.md',
+      'note',
+      survivingFirst.titleRaw,
+      survivingFirst.headerLine,
+      buildAncestorPath(parsedAfter.document, survivingFirst),
+      survivingFirst.ownRangeHash,
+      parsedAfter.document.contentHash,
+      hasIdenticalStructuralSibling(parsedAfter.document, survivingFirst),
+    );
+    expect(store.listDraftsForFile('notes/pr6-upgrade.md')).toHaveLength(1);
+    expect(store.listDraftsForFile('notes/pr6-upgrade.md')[0]?.draftId).toBe(
+      legacyPr6Draft.draftId,
+    );
+
+    // A second deleteMatchingDraft call on surviving 1st "メモ" still must NOT touch the PR #6 draft
+    await store.deleteMatchingDraft(
+      'notes/pr6-upgrade.md',
+      'note',
+      survivingFirst.titleRaw,
+      survivingFirst.headerLine,
+      buildAncestorPath(parsedAfter.document, survivingFirst),
+      survivingFirst.ownRangeHash,
+      parsedAfter.document.contentHash,
+      hasIdenticalStructuralSibling(parsedAfter.document, survivingFirst),
+    );
+    expect(store.listDraftsForFile('notes/pr6-upgrade.md')).toHaveLength(1);
+    expect(store.listDraftsForFile('notes/pr6-upgrade.md')[0]?.draftId).toBe(
+      legacyPr6Draft.draftId,
+    );
   });
 });

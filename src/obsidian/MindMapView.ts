@@ -503,6 +503,7 @@ export class MindMapView extends FileView {
           targetAncestorPath?: readonly string[],
           targetOwnRangeHash?: string,
           baseContentHash?: string,
+          targetHadIdenticalSibling?: boolean,
         ) =>
           draftStore.deleteMatchingDraft(
             filePath,
@@ -512,6 +513,7 @@ export class MindMapView extends FileView {
             targetAncestorPath,
             targetOwnRangeHash,
             baseContentHash,
+            targetHadIdenticalSibling,
           ),
         onCopyBranchSubtree: (node: TopicNode) => this.copyBranchSubtree(node),
         onReadBranchClipboard: () => this.readBranchClipboard(),
