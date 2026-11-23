@@ -33,11 +33,11 @@
 - **Fail-Closed**：2MB 超・5,000 トピック超・閉じない frontmatter は地図を開かない。改行混在・タブ/スペース混在・箇条書き内見出し・範囲重複は読み取り専用にする。
 - **Obsidian API 互換性**：Obsidian 1.13.0+ の基底クラス `Plugin` が `settings?: unknown` プロパティを持つため、プラグイン独自設定のアクセサは `mindMapSettings` とし、`pluginData.settings` を単一情報源として保持する。
 - **CommonMark リストネスト整合**：順序付きリスト（`1. ` = 3 桁、`10. ` = 4 桁）の子は、親の本文開始桁（インデント＋記号幅＋1）以上に字下げする。パーサーとパッチ生成の双方が同じ基準を使い、Obsidian 本体との親子解釈ズレを防ぐ。
-- **編集セッションの開始時スナップショット固定と二重ゲート**：インライン編集・ノート編集の確定時は最新 `doc` から `PatchGuard` を作り直さず、編集開始時に固定した `filePath`・`PatchGuard` を使って CAS 照合する。`MarkdownEditorGate` はキュー投入前だけでなく `vault.process` の同期コールバック先頭でも再確認する。
+- **編集セッションの開始時スナップショット固定と二重ゲート**：インライン編集・ノート編集の確定時は最新 `doc` から `PatchGuard` を作り直さず、編集開始時に固定した `filePath`・`PatchGuard` を使って CAS 照合する。`MarkdownEditorGate` はキュー投入前だけでなく `vault.process` の同期コールバック先頭でも再確認し、競合・検証失敗時は `PatchAbortError` を送出して書き込み自体を中断（ディスク無書込）して呼び出し元へ拒否コードを返す。
 - **リストタイトルのブロック構文ガード**：リスト項目のタイトル先頭にブロック構文（`#`, `-`, `1.`, `>`, `` ``` ``, `---`, HTML タグ等）が入る編集は拒否する（見出しトピックでの `## 1. Overview` 等は許容）。
 - **非同期ビュー更新の鮮度判定と厳密スナップショット比較**：非同期の読込・保存完了時は開始時の `path`・`loadSequence` と現在値を照合し、ノート切替・再読込後の遅着結果をビューへ反映しない。再描画スキップは LF 正規化 `contentHash` ではなく `path`・`basename`・`rawText`（改行コード含む）の厳密一致でのみ行う。
 - **Obsidian グローバルホットキーとの競合回避（`View.scope`）**：`F2` など Obsidian 標準ホットキーと衝突するビュー内ショートカットは React `onKeyDown` に届かないため、`this.scope = new Scope(this.plugin.app.scope)` でビュー固有スコープに登録し、マップ内フォーカス（または `activeElement === document.body`）かつ非編集要素・非 IME 変換中のときのみ `return false` で処理する（Obsidian 1.15.1 実機確認済み）。
-- **トピックノート直接編集（M2）**：`SemanticCommand` の `updateNote` として実装。段落以外のブロック構文（見出し・箇条書き・コードフェンス等）が含まれる場合は書き戻さず理由通知＋下書き保持。箇条書きトピックのノートは元の字下げを自動付与する。
+- **トピックノート直接編集（M2-c / M3）**：`SemanticCommand` の `updateNote` として実装し、PRD 必須の `field: 'note'` 下書き保護（`DraftStore` 退避・回復）と同時公開する。段落以外のブロック構文（見出し・箇条書き・コードフェンス等）が含まれる場合は書き戻さず理由通知＋下書き保持。箇条書きトピックのノートは元の字下げを自動付与する。
 - **セキュリティ・Obsidian 審査基準**：`innerHTML` / `dangerouslySetInnerHTML` / `console.log` / deprecated API 禁止。外部リンクは `http:` / `https:` のみ、内部リンクはパストラバーサル（`..`）と絶対パスを遮断。
 - **ツールチェーン・依存ビルド制約**：`pnpm` v11 ではビルドスクリプトを持つ依存の許否を [pnpm-workspace.yaml](../pnpm-workspace.yaml) の `allowBuilds` に明示しないと `ERR_PNPM_IGNORED_BUILDS` で `pnpm install` / `pnpm verify` が失敗する。単一パッケージ構成でも同ファイルを維持し、`allowBuilds: { esbuild: false }` で不要な postinstall を無効化する（実行バイナリはプラットフォーム別 `optionalDependencies` で動作することを確認済み）。また [package.json](../package.json) の `packageManager` は Corepack が自動ピン留めするため削除しない。
 
@@ -60,7 +60,7 @@
 - **M0（環境構築）**：完了（`package.json`, `pnpm-lock.yaml`, `pnpm-workspace.yaml`, `tsconfig.json`, `esbuild.config.mjs`, `eslint.config.mjs`, `vitest.config.ts`, `manifest.json`, `versions.json`, `styles.css`、ディレクトリ名 `thoughtforge-obsidian` へ統一）
 - **M1（閲覧 MVP）**：完了（PR #1 で `main` へマージ済み。Core パーサー・レイアウト・Focus/Quick Filter・ナビゲーション、React HTML+SVG ビューア、Obsidian `FileView`・コマンド・設定・i18n、`pnpm verify`・Obsidian 1.15.1 実機確認済み）
 - **M2-a（最小編集スライス）**：実装・実機検証完了（PR #2 `feat/m2a-minimal-edit-slice`、CI 通過。`src/core/patch/` の `rename`/`insertChild`/`insertSibling`、Dry-Run 再解析、`FileCoordinator` / `MarkdownEditorGate` / `ObsidianHostAdapter`、`InlineEditor` + `imeGuard` + `editSession`、`viewGuard` + `View.scope` `F2`、単体テスト計 9 ファイル 41 件、隔離 Obsidian 1.15.1 実機 15/15 項目通過）
-- **次フェーズ（M2-ui → M2-b → M2-c / M3）**：
-  - **M2-ui（Visual Design & UI/UX Polish）**：Section 3.5 のテーパード曲線・下線接続・カラーモード・レイアウト切替・Quick Style Popover・ノートホバープレビュー・構造化フィルタ・SVG バッジ・カメラ自動追従
-  - **M2-b（Classic Keymap 拡張 & トピックノート直接編集）**：`Shift+Tab` / `Delete` / `Cmd+Backspace` / `Cmd+Arrow` / `Cmd+Enter` 分割 / `Cmd+Z` Undo-Redo / `NodePopover` 本文直接編集・`Cmd+Shift+T` / タスク `[ ]`↔`[x]` トグル
-  - **M2-c / M3（実用化・安全強化）**：D&D 再配置・並替、枝コピペ、`data.json` 下書き退避・復元 UI
+- **次フェーズ（M2-b → M2-ui → M2-c / M3）**：
+  - **M2-b（構造編集・削除 & Undo/Redo）**：`Shift+Tab`（新親） / `Delete`（枝削除） / `Cmd+Backspace`（子昇格削除） / `Cmd+Arrow`（並替・階層昇降） / `Cmd+Enter`（分割） / `Cmd+Z`・`Cmd+Shift+Z`（Undo/Redo） / タスク `[ ]`↔`[x]` 切替
+  - **M2-ui（Visual Design & UI/UX Polish）**：Section 3.5 のテーパード曲線・下線接続・カラーモード・レイアウト切替・Quick Style Popover・ノートホバープレビュー・構造化フィルタ・SVG バッジ・カメラ自動追従（ビュー設定はまず Vault 共通で `data.json` の `settings` へ保存）
+  - **M2-c / M3（下書き保護＋本文直接編集 & 実用化）**：`DraftStore`（`field: 'title' | 'note'` 下書き退避・回復）と同時公開する `NodePopover` 本文直接編集・`Cmd+Shift+T`、D&D 再配置・並替、枝コピペ

@@ -59,7 +59,7 @@ frontmatter、フェンス／インデントコードブロック、表、引用
 
 - **Phase 1（MVP：M0〜M3）**：
   - **閲覧＆レイアウト・ビジュアル（M1 / M2-ui）**：マップビュー起動、Markdown 並置・ソース行ジャンプ、レイアウト切替（左右バランス / 右片側 / トップダウン組織図）、階層 0〜9 テーマ・テーパード有機曲線＆下線ベースライン接続・パステルティント／ワイヤーフレーム／モノクロカラーモード・レインボー配色・背景グリッド、マップ内 Quick Style Popover、折りたたみ（`.`）・深度 `0〜9`、Zoom/Pan/全体フィット・選択フィット（`⌘⇧0`）・選択ノード自動追従、Focus（固定/追従）、Quick Filter＋Markdown 由来構造化フィルタ（ノート有・タスク状態・リンク・`#tag`・保全ブロック）、SVG バッジ＆ノートホバークイックプレビュー、非破壊トピック番号付け表示、語数・ズーム・Styles 統合ステータスバー、リンク起動、コマンドパレット登録。
-  - **双方向編集＆安全保護（M2-a〜M2-c / M3）**：Classic Keymap 全操作（`F2`・`Tab`・`Enter`・`Shift+Enter`・`Shift+Tab` 新親・`Delete` 枝削除・`Cmd+Backspace` 子昇格削除・`Cmd+Arrow` 並替/昇降・`Cmd+Enter` 分割・`Cmd+Shift+T` ノート編集・`Cmd+Z/Shift+Z` Undo/Redo）、タスク `[ ]`↔`[x]` クリックトグル、マウス/D&D 再配置・並替、枝コピペ、日本語 IME ガード、未保存 Markdown 競合保護、未確定入力の下書き退避（タイトル＋ノート）、トピックノート直接編集。
+  - **双方向編集＆安全保護（M2-a / M2-b / M2-c・M3）**：Classic Keymap 全操作（M2-a: `F2`・`Tab`・`Enter`・`Shift+Enter`／M2-b: `Shift+Tab` 新親・`Delete` 枝削除・`Cmd+Backspace` 子昇格削除・`Cmd+Arrow` 並替/昇降・`Cmd+Enter` 分割・`Cmd+Z/Shift+Z` Undo/Redo・タスク `[ ]`↔`[x]` クリックトグル）、日本語 IME ガード、未保存 Markdown 競合保護、および M2-c / M3 での `DraftStore`（`field: 'title' | 'note'` 下書き退避・回復）と同時公開するトピックノート直接編集（`Cmd+Shift+T`）・マウス/D&D 再配置・並替・枝コピペ。
 - **Phase 2（Obsidian 強化：M4）**：リンクによる地図間移動＆履歴バック、Backlinks カード、画像 `![[ ]]` サムネイル・タグ `#tag` 連携、カーソル位置から地図へ、枝のノート切り出し、`NodeMetadataProvider` サイドカーによる非破壊視覚拡張（Boundary / Relationship / 個別色・アイコンの検討。Markdown 本文へは書かない）。
 - **Phase 3（拡張：M5）**：ブランチ順の簡易プレゼンテーションモード（全体→各主要枝の滑らかなズーム遷移）、SVG/PNG/OPML 出力、`.itmz` 片方向インポート、Canvas 出力、モバイル検討。
 - **対象外**：Markdown への自由座標・色・形保存、独自タスク属性（Effort/Cost/Resources/Rollup 等）の独自書式書込み、手書き Doodle、内蔵 Web リサーチ、独自同期/共有、Office 出力、常設 Outline/右パネル。
@@ -71,9 +71,9 @@ frontmatter、フェンス／インデントコードブロック、表、引用
 - **M0**：基盤＆技術スパイク（環境・ビルド・Lint・テスト構築）— **完了**
 - **M1**：閲覧 MVP（通常 `.md` パーサー、Fail-Closed、左右レイアウト、階層テーマ、折りたたみ/深度、Focus/Filter、Zoom/Pan、ポップオーバー閲覧、ソース行ジャンプ）— **完了（PR #1）**
 - **M2-a**：最小編集スライス（最小差分パッチ `rename`/`insertChild`/`insertSibling`、Dry-Run 再解析、`vault.process` CAS 照合、未保存 Markdown 競合保護、日本語 IME ガード、`View.scope` `F2`）— **実装＆実機検証完了（PR #2）**
+- **M2-b**：構造編集・削除＆Undo/Redo（`Shift+Tab` 新親・`Delete` 枝削除・`Cmd+Backspace` 子昇格削除・`Cmd+Arrow` 並替/昇降・`Cmd+Enter` 分割・`Cmd+Z/Shift+Z` Undo/Redo・タスク `[ ]`↔`[x]` 切替）
 - **M2-ui**：Visual Design & UI/UX Polish（iThoughts 動画 10 件分析の表現層・UI 踏襲：テーパード曲線、下線接続、カラーモード・レイアウト・グリッド、Quick Style Popover、ノートホバープレビュー、構造化フィルタ、SVG バッジ、選択自動追従、非破壊トピック番号付け）
-- **M2-b**：Classic Keymap 拡張＆トピックノート直接編集（`Shift+Tab` / `Delete` / `Cmd+Backspace` / `Cmd+Arrow` / `Cmd+Enter` / Undo・Redo / `NodePopover` 直接編集 / タスクチェックボックス切替）
-- **M2-c / M3**：実用化・安全強化（D&D 再配置・並替、枝コピペ、下書き退避・回復、実機受入テスト）
+- **M2-c / M3**：下書き保護＋本文直接編集＆実用化（`DraftStore` による `field: 'title' | 'note'` 下書き退避・回復と同時公開する `NodePopover` トピックノート直接編集・`Cmd+Shift+T`、D&D 再配置・並替、枝コピペ、実機受入テスト）
 - **M4**：Obsidian 強化（Vault 連携・非破壊サイドカー視覚拡張検討）
 - **M5**：拡張（簡易プレゼンテーション・エクスポート・`.itmz` インポート等）
 
