@@ -15,6 +15,7 @@ import type { SemanticCommand } from '../core/patch/commands';
 import type { Messages } from '../i18n';
 import type { CommandDispatchOutcome, SyncRejectCode } from '../sync/ports';
 import { MindMapApp, type MindMapActionTriggers } from '../ui/App';
+import { isInsideMapPopover } from '../ui/keyboardGuard';
 import type ThoughtForgePlugin from '../main';
 import { promptConfirmDeleteBranch } from './ConfirmModal';
 import {
@@ -192,6 +193,8 @@ export class MindMapView extends FileView {
     return shouldTriggerMindMapScopeShortcut(evt, {
       targetIsEditable: isEditableDomTarget(evt.target),
       activeElementIsEditable: isEditableDomTarget(activeEl),
+      targetInsidePopover: isInsideMapPopover(evt.target),
+      activeElementInsidePopover: isInsideMapPopover(activeEl),
       targetInsideMap: isNodeInsideContainer(this.contentEl, evt.target),
       activeElementInsideMap: isNodeInsideContainer(this.contentEl, activeEl),
       activeElementIsBody: activeEl === null || activeEl === ownerDoc.body,

@@ -3,6 +3,7 @@ import type { FocusMode, StructuredFilterCriteria } from '../core/model';
 import { hasActiveStructuredFilter } from '../core/view/filterFocus';
 import type { Messages } from '../i18n';
 import { FilterFunnelIcon, StylesPaletteIcon } from './Icons';
+import { shouldHandlePopoverDocumentEscape } from './keyboardGuard';
 
 export interface ToolbarProps {
   readonly messages: Messages;
@@ -57,13 +58,16 @@ export function Toolbar({
 
   useEffect(() => {
     if (!filterMenuOpen) return;
-    const ownerDoc = filterPopoverRef.current?.ownerDocument ?? document;
+    const popoverEl = filterPopoverRef.current;
+    const ownerDoc = popoverEl?.ownerDocument ?? document;
+    const rootEl = popoverEl?.closest('.ito-root') ?? null;
     const handleDocKeyDown = (event: KeyboardEvent): void => {
-      if (event.key === 'Escape') {
-        event.preventDefault();
-        event.stopPropagation();
-        setFilterMenuOpen(false);
+      if (!shouldHandlePopoverDocumentEscape(ownerDoc, rootEl, event)) {
+        return;
       }
+      event.preventDefault();
+      event.stopPropagation();
+      setFilterMenuOpen(false);
     };
     ownerDoc.addEventListener('keydown', handleDocKeyDown, true);
     return () => ownerDoc.removeEventListener('keydown', handleDocKeyDown, true);
@@ -187,6 +191,15 @@ export function Toolbar({
             role="dialog"
             aria-label={messages.toolbar.filterMenuLabel}
             onClick={(event) => event.stopPropagation()}
+            onKeyDown={(event) => {
+              if (event.key === 'Escape') {
+                event.preventDefault();
+                event.stopPropagation();
+                setFilterMenuOpen(false);
+                return;
+              }
+              event.stopPropagation();
+            }}
           >
             <label className="ito-filter-check">
               <input

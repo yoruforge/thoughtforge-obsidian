@@ -9,6 +9,7 @@ import type {
   MindMapDocument,
   TopicNode,
 } from '../model';
+import { extractTopicTags } from '../view/topicPresentation';
 import { assignMainBranchSides } from './balance';
 import { resolveLevelStyle } from './theme';
 
@@ -18,7 +19,7 @@ export interface NodeSize {
 }
 
 export interface NodeSizeMeasurer {
-  measure(node: TopicNode, depth: number): NodeSize;
+  measure(node: TopicNode, depth: number, numberLabel?: string): NodeSize;
 }
 
 export interface LayoutSpacing {
@@ -33,6 +34,7 @@ export interface LayoutSpacing {
 export interface LayoutOptions {
   readonly layoutMode?: MapLayoutMode;
   readonly edgeStyle?: BranchEdgeStyle;
+  readonly numberingLabels?: ReadonlyMap<string, string>;
 }
 
 export const DEFAULT_LAYOUT_SPACING: LayoutSpacing = {
@@ -77,26 +79,58 @@ export function estimateTextUnits(text: string): number {
 }
 
 export const defaultNodeSizeMeasurer: NodeSizeMeasurer = {
-  measure(node: TopicNode, depth: number): NodeSize {
+  measure(node: TopicNode, depth: number, numberLabel?: string): NodeSize {
     const style = resolveLevelStyle(depth);
     const title = node.displayTitle.length > 0 ? node.displayTitle : '(untitled)';
-    const prefixExtraWidth = node.preservedPrefix.length > 0 ? 34 : 0;
+    const borderX = style.shape === 'underline' ? 0 : Math.ceil(style.borderWidthPx * 2);
+    const borderY =
+      style.shape === 'underline'
+        ? Math.ceil(style.borderWidthPx)
+        : Math.ceil(style.borderWidthPx * 2);
+
+    // Task toggle / preserved prefix sits as a flex sibling before .ito-node-title (+6px flex gap)
+    const prefixExtraWidth = node.preservedPrefix.length > 0 ? 28 : 0;
+
+    // Inline badges sit as a flex sibling after .ito-node-title (+6px flex gap when present)
+    const badgeCount =
+      (node.noteRange !== null ? 1 : 0) +
+      (node.unmappedBlocks.length > 0 ? 1 : 0) +
+      (node.links.length > 0 ? 1 : 0);
     const badgeExtraWidth =
-      (node.noteRange !== null ? 22 : 0) +
-      (node.unmappedBlocks.length > 0 ? 22 : 0) +
-      (node.links.length > 0 ? 20 : 0);
+      badgeCount > 0 ? badgeCount * 20 + Math.max(0, badgeCount - 1) * 3 + 6 : 0;
+
+    // Non-destructive topic numbering badge (.ito-node-number: 0.78em + 8px padding + 6px margin)
+    const numberExtraWidth =
+      numberLabel !== undefined && numberLabel.length > 0
+        ? Math.ceil(estimateTextUnits(numberLabel) * (style.fontSizePx * 0.82)) + 16
+        : 0;
+
+    // Inline #tag pills add horizontal pill padding (12px) + margin (4px) per tag
+    const tagCount =
+      node.kind === 'central-virtual' ? 0 : extractTopicTags(node.titleRaw).length;
+    const tagExtraWidth = tagCount * 16;
+
+    // Small safety margin for cross-platform font metric variance (macOS/Windows/Linux CJK)
+    const horizontalSafetyBuffer = 8;
 
     const rawTextWidth = Math.ceil(estimateTextUnits(title) * style.fontSizePx);
-    const contentMaxWidth = MAX_NODE_WIDTH - style.paddingX * 2;
-    const totalContentWidth = rawTextWidth + prefixExtraWidth + badgeExtraWidth;
-    const wrappedLines = Math.max(1, Math.ceil(totalContentWidth / contentMaxWidth));
-    const singleLineWidth = totalContentWidth + style.paddingX * 2;
-    const width = Math.max(
-      MIN_NODE_WIDTH,
-      Math.min(MAX_NODE_WIDTH, wrappedLines > 1 ? MAX_NODE_WIDTH : singleLineWidth),
-    );
-    const lineHeight = Math.ceil(style.fontSizePx * 1.4);
-    const height = wrappedLines * lineHeight + style.paddingY * 2;
+    const titleInlineWidth = rawTextWidth + numberExtraWidth + tagExtraWidth + horizontalSafetyBuffer;
+    const chromeWidth = style.paddingX * 2 + borderX + prefixExtraWidth + badgeExtraWidth;
+    const titleMaxWidth = Math.max(80, MAX_NODE_WIDTH - chromeWidth);
+
+    let wrappedLines = 1;
+    let width: number;
+    if (titleInlineWidth <= titleMaxWidth) {
+      width = Math.max(MIN_NODE_WIDTH, Math.min(MAX_NODE_WIDTH, titleInlineWidth + chromeWidth));
+    } else {
+      // Reserve 14px per wrapped line for ragged word/tag-pill line endings
+      const effectiveWrapWidth = Math.max(72, titleMaxWidth - 14);
+      wrappedLines = Math.max(2, Math.ceil(titleInlineWidth / effectiveWrapWidth));
+      width = MAX_NODE_WIDTH;
+    }
+
+    const lineHeight = Math.ceil(style.fontSizePx * 1.45);
+    const height = wrappedLines * lineHeight + style.paddingY * 2 + borderY;
     return { width, height };
   },
 };
@@ -253,6 +287,7 @@ function computeOrgChartLayout(
   measurer: NodeSizeMeasurer,
   spacing: LayoutSpacing,
   edgeStyle: BranchEdgeStyle,
+  numberingLabels?: ReadonlyMap<string, string>,
 ): LayoutResult {
   const sizes = new Map<string, NodeSize>();
   const columnWidths = new Map<string, number>();
@@ -260,7 +295,7 @@ function computeOrgChartLayout(
   const measureOrgColumn = (nodeId: string, depth: number, indentOffset: number): number => {
     const node = doc.nodes.get(nodeId);
     if (!node) return 0;
-    const size = measurer.measure(node, depth);
+    const size = measurer.measure(node, depth, numberingLabels?.get(nodeId));
     sizes.set(nodeId, size);
 
     let maxWidth = indentOffset + size.width;
@@ -274,7 +309,7 @@ function computeOrgChartLayout(
     return maxWidth;
   };
 
-  const rootSize = measurer.measure(root, 0);
+  const rootSize = measurer.measure(root, 0, numberingLabels?.get(root.id));
   sizes.set(root.id, rootSize);
 
   const visibleMainBranches = visibleChildrenOf(root.id);
@@ -402,6 +437,7 @@ export function computeLayout(
 
   const layoutMode: MapLayoutMode = options?.layoutMode ?? 'balanced';
   const edgeStyle: BranchEdgeStyle = options?.edgeStyle ?? 'tapered';
+  const numberingLabels = options?.numberingLabels;
 
   const visibleChildrenOf = (nodeId: string): readonly string[] => {
     const node = doc.nodes.get(nodeId);
@@ -410,7 +446,15 @@ export function computeLayout(
   };
 
   if (layoutMode === 'org-chart') {
-    return computeOrgChartLayout(doc, root, visibleChildrenOf, measurer, spacing, edgeStyle);
+    return computeOrgChartLayout(
+      doc,
+      root,
+      visibleChildrenOf,
+      measurer,
+      spacing,
+      edgeStyle,
+      numberingLabels,
+    );
   }
 
   const sizes = new Map<string, NodeSize>();
@@ -425,7 +469,7 @@ export function computeLayout(
     depths.set(nodeId, depth);
     colorIndices.set(nodeId, branchColorIndex);
 
-    const size = measurer.measure(node, depth);
+    const size = measurer.measure(node, depth, numberingLabels?.get(nodeId));
     sizes.set(nodeId, size);
 
     const children = visibleChildrenOf(nodeId);
@@ -447,7 +491,7 @@ export function computeLayout(
     return totalHeight;
   };
 
-  const rootSize = measurer.measure(root, 0);
+  const rootSize = measurer.measure(root, 0, numberingLabels?.get(root.id));
   sizes.set(root.id, rootSize);
   depths.set(root.id, 0);
   colorIndices.set(root.id, 0);

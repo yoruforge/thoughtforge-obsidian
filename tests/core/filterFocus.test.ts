@@ -194,5 +194,18 @@ describe('filterFocus', () => {
       userOpenedDuringFilterIds: new Set(),
     });
     expect([...byJaTag.matchedNodeIds]).toEqual([openTaskId]);
+
+    // Checking both open and completed task checkboxes matches all tasks (OR within task state)
+    const byAnyTask = computeVisibilityAndEmphasis(doc, {
+      baseCollapsedIds: new Set(),
+      focusMode: { kind: 'off' },
+      selectedId: doc.rootId,
+      filterQuery: '',
+      structuredFilter: { hasOpenTask: true, hasCompletedTask: true },
+      userOpenedDuringFilterIds: new Set(),
+    });
+    expect(byAnyTask.matchedNodeIds.has(openTaskId)).toBe(true);
+    expect(byAnyTask.matchedNodeIds.has(doneTaskId)).toBe(true);
+    expect(byAnyTask.matchedNodeIds.size).toBe(2);
   });
 });

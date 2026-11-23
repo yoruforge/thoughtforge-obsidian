@@ -41,6 +41,7 @@ import {
   type EditingSession,
 } from './editSession';
 import type { GuardableKeyEvent } from './imeGuard';
+import { shouldIgnoreCanvasKeyEvent } from './keyboardGuard';
 import { NodePopover } from './NodePopover';
 import { QuickStylePopover } from './QuickStylePopover';
 import { StatusBar } from './StatusBar';
@@ -90,12 +91,6 @@ function computeFitCamera(bounds: LayoutBounds, size: ViewportSize): CameraState
     y: size.height / 2 - centerY * zoom,
     zoom,
   };
-}
-
-function isEditableTarget(target: EventTarget | null): boolean {
-  if (!(target instanceof HTMLElement)) return false;
-  const tag = target.tagName;
-  return tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT' || target.isContentEditable;
 }
 
 export function MindMapApp({
@@ -204,8 +199,9 @@ export function MindMapApp({
     return computeLayout(doc, visibility.visibleNodeIds, undefined, undefined, {
       layoutMode: settings.layoutMode,
       edgeStyle: settings.edgeStyle,
+      numberingLabels,
     });
-  }, [doc, visibility, settings.layoutMode, settings.edgeStyle]);
+  }, [doc, visibility, settings.layoutMode, settings.edgeStyle, numberingLabels]);
 
   const layoutRef = useRef(layout);
   layoutRef.current = layout;
@@ -619,7 +615,7 @@ export function MindMapApp({
       }
     }
 
-    if (isEditableTarget(event.target)) {
+    if (shouldIgnoreCanvasKeyEvent(event.target)) {
       return;
     }
 
@@ -857,12 +853,20 @@ export function MindMapApp({
     });
   }, []);
 
+  const handleCloseStyles = useCallback(() => {
+    setStylesOpen(false);
+  }, []);
+
   const handleTogglePopover = useCallback(() => {
     setPopoverOpen((prev) => {
       const next = !prev;
       if (next) setStylesOpen(false);
       return next;
     });
+  }, []);
+
+  const handleClosePopover = useCallback(() => {
+    setPopoverOpen(false);
   }, []);
 
   if (parseResult.status === 'blocked') {
@@ -968,7 +972,7 @@ export function MindMapApp({
             node={selectedNode}
             messages={messages}
             isReadOnly={doc.readOnlyReasons.length > 0}
-            onClose={() => setPopoverOpen(false)}
+            onClose={handleClosePopover}
             onJumpToSource={(line) => onOpenMarkdown(line)}
             onOpenLink={onOpenLink}
           />
@@ -979,7 +983,7 @@ export function MindMapApp({
             settings={settings}
             messages={messages}
             onUpdateSettings={onUpdateSettings}
-            onClose={() => setStylesOpen(false)}
+            onClose={handleCloseStyles}
           />
         )}
 

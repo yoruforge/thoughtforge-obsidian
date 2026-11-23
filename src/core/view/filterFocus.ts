@@ -46,15 +46,25 @@ function matchesStructuredFilter(
 ): boolean {
   if (!criteria) return true;
   if (criteria.hasNote === true && node.noteRange === null) return false;
-  if (criteria.hasOpenTask === true && !OPEN_TASK_RE.test(node.preservedPrefix)) return false;
-  if (criteria.hasCompletedTask === true && !COMPLETED_TASK_RE.test(node.preservedPrefix)) {
-    return false;
+
+  const wantOpen = criteria.hasOpenTask === true;
+  const wantCompleted = criteria.hasCompletedTask === true;
+  if (wantOpen && wantCompleted) {
+    if (!OPEN_TASK_RE.test(node.preservedPrefix) && !COMPLETED_TASK_RE.test(node.preservedPrefix)) {
+      return false;
+    }
+  } else if (wantOpen) {
+    if (!OPEN_TASK_RE.test(node.preservedPrefix)) return false;
+  } else if (wantCompleted) {
+    if (!COMPLETED_TASK_RE.test(node.preservedPrefix)) return false;
   }
+
   if (criteria.hasLink === true && node.links.length === 0) return false;
   if (criteria.hasUnmapped === true && node.unmappedBlocks.length === 0) return false;
 
   const rawTag = criteria.tag?.trim();
   if (rawTag && rawTag.length > 0) {
+    if (node.kind === 'central-virtual') return false;
     const normalizedFilterTag = (rawTag.startsWith('#') ? rawTag : `#${rawTag}`).toLowerCase();
     const nodeTags = extractTopicTags(node.titleRaw).map((t) => t.toLowerCase());
     const tagHit = nodeTags.some(

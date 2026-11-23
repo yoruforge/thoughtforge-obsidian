@@ -8,6 +8,7 @@ import {
 } from '../../src/core/layout/theme';
 import { computeLayout, cullLayoutToViewport } from '../../src/core/layout/treeLayout';
 import { parseMarkdownToMap } from '../../src/core/parser';
+import { computeTopicNumbering } from '../../src/core/view/topicPresentation';
 import { resolveArrowNavigation } from '../../src/core/view/navigation';
 
 describe('layout engine', () => {
@@ -218,5 +219,54 @@ describe('layout engine', () => {
 
     const monoBranch = getBranchColor(dark, 2, true, 'monochrome');
     expect(monoBranch).toBe(dark.monochromeAccent);
+  });
+
+  it('reserves width/height for numbering labels and tag pills on Japanese sibling headings without overlap', () => {
+    const md = [
+      '# ルート',
+      '## 日本語の見出しです',
+      '## 日本語の見出しです',
+      '- 長い日本語の見出しと複数のタグを含むトピック #設計 #重要',
+      '- 次の兄弟トピック',
+    ].join('\n');
+    const parsed = parseMarkdownToMap(md, 'JaNumbering');
+    expect(parsed.status).toBe('ok');
+    if (parsed.status !== 'ok') return;
+    const doc = parsed.document;
+    const allIds = new Set(doc.nodes.keys());
+    const numberingLabels = computeTopicNumbering(doc, 'decimal');
+
+    const unnumbered = computeLayout(doc, allIds, undefined, undefined, { layoutMode: 'right' });
+    const numbered = computeLayout(doc, allIds, undefined, undefined, {
+      layoutMode: 'right',
+      numberingLabels,
+    });
+
+    const firstHeading = [...doc.nodes.values()].find((n) => n.titleRaw === '日本語の見出しです');
+    expect(firstHeading).toBeDefined();
+    if (!firstHeading) return;
+
+    const unnumberedNode = unnumbered.nodes.get(firstHeading.id);
+    const numberedNode = numbered.nodes.get(firstHeading.id);
+    expect(unnumberedNode).toBeDefined();
+    expect(numberedNode).toBeDefined();
+    if (!unnumberedNode || !numberedNode) return;
+
+    // Numbering adds reserved width so Japanese heading does not unexpectedly wrap & collide
+    expect(numberedNode.width).toBeGreaterThan(unnumberedNode.width);
+
+    // Verify zero pairwise overlap across all placed nodes
+    const placed = [...numbered.nodes.values()];
+    for (let i = 0; i < placed.length; i += 1) {
+      const a = placed[i];
+      if (!a) continue;
+      for (let j = i + 1; j < placed.length; j += 1) {
+        const b = placed[j];
+        if (!b) continue;
+        const overlapsX = a.x < b.x + b.width && a.x + a.width > b.x;
+        const overlapsY = a.y < b.y + b.height && a.y + a.height > b.y;
+        expect(overlapsX && overlapsY).toBe(false);
+      }
+    }
   });
 });

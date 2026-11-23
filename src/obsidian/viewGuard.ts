@@ -27,6 +27,8 @@ export type ScopeF2EventLike = ScopeShortcutEventLike;
 export interface ScopeShortcutContext {
   readonly targetIsEditable: boolean;
   readonly activeElementIsEditable: boolean;
+  readonly targetInsidePopover?: boolean;
+  readonly activeElementInsidePopover?: boolean;
   readonly targetInsideMap: boolean;
   readonly activeElementInsideMap: boolean;
   readonly activeElementIsBody: boolean;
@@ -37,7 +39,7 @@ export type ScopeF2Context = ScopeShortcutContext;
 /**
  * Decides whether a MindMapView-scoped shortcut (e.g. F2, Mod+Z, Mod+Shift+Z)
  * should be handled by the mind map rather than falling through to Obsidian or
- * interfering with native editing inside text inputs / IME composition.
+ * interfering with native editing inside text inputs / IME composition / popovers.
  */
 export function shouldTriggerMindMapScopeShortcut(
   event: ScopeShortcutEventLike,
@@ -46,7 +48,12 @@ export function shouldTriggerMindMapScopeShortcut(
   if (event.isComposing === true || event.keyCode === 229) {
     return false;
   }
-  if (context.targetIsEditable || context.activeElementIsEditable) {
+  if (
+    context.targetIsEditable ||
+    context.activeElementIsEditable ||
+    context.targetInsidePopover === true ||
+    context.activeElementInsidePopover === true
+  ) {
     return false;
   }
   return (

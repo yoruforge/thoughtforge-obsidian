@@ -6,13 +6,13 @@ import {
   resolveNodeVisualColors,
   type MapThemePalette,
 } from '../core/layout/theme';
+import { tokenizeTopicTitle } from '../core/view/topicPresentation';
 import type { EditingSession } from './editSession';
 import { BlockIcon, CheckIcon, LinkIcon, NoteIcon } from './Icons';
 import type { GuardableKeyEvent } from './imeGuard';
 import { InlineEditor } from './InlineEditor';
 
 const STANDARD_TASK_PREFIX_RE = /^\[([ xX])\][ \t]+$/;
-const INLINE_TAG_SPLIT_RE = /(#(?![0-9]+(?:$|[\s)\]}.,;:!?]))[\p{L}\p{N}_/-]+)/gu;
 
 function formatNoteHoverPreview(noteText: string): string {
   const lines = noteText.trim().split('\n').slice(0, 4);
@@ -23,24 +23,40 @@ function formatNoteHoverPreview(noteText: string): string {
   return noteText.trim().split('\n').length > 4 ? `${joined}…` : joined;
 }
 
-function renderTitleWithTagPills(displayTitle: string, isTaskDone: boolean) {
-  const parts = displayTitle.split(INLINE_TAG_SPLIT_RE);
-  if (parts.length <= 1) {
-    return <span className={isTaskDone ? 'ito-node-title-done' : undefined}>{displayTitle}</span>;
+function renderTitleWithTagPills(
+  titleRaw: string,
+  displayTitle: string,
+  isVirtualRoot: boolean,
+  isTaskDone: boolean,
+) {
+  if (isVirtualRoot) {
+    const label = displayTitle.length > 0 ? displayTitle : '(untitled)';
+    return <span className={isTaskDone ? 'ito-node-title-done' : undefined}>{label}</span>;
   }
+
+  const segments = tokenizeTopicTitle(titleRaw);
+  if (segments.length === 0) {
+    const fallback = displayTitle.length > 0 ? displayTitle : '(untitled)';
+    return <span className={isTaskDone ? 'ito-node-title-done' : undefined}>{fallback}</span>;
+  }
+
+  const hasAnyTag = segments.some((seg) => seg.kind === 'tag');
+  if (!hasAnyTag) {
+    const label = displayTitle.length > 0 ? displayTitle : '(untitled)';
+    return <span className={isTaskDone ? 'ito-node-title-done' : undefined}>{label}</span>;
+  }
+
   return (
     <span className={isTaskDone ? 'ito-node-title-done' : undefined}>
-      {parts.map((part, index) => {
-        if (part.length === 0) return null;
-        if (part.startsWith('#') && /^#(?![0-9]+$)[\p{L}\p{N}_/-]+$/u.test(part)) {
-          return (
-            <span key={`${index}-${part}`} className="ito-node-tag-pill">
-              {part}
-            </span>
-          );
-        }
-        return <span key={`${index}-txt`}>{part}</span>;
-      })}
+      {segments.map((seg, index) =>
+        seg.kind === 'tag' ? (
+          <span key={`${index}-${seg.text}`} className="ito-node-tag-pill">
+            {seg.text}
+          </span>
+        ) : (
+          <span key={`${index}-txt`}>{seg.text}</span>
+        ),
+      )}
     </span>
   );
 }
@@ -243,10 +259,7 @@ export function DomNodeLayer({
                 onDiscard={onDiscardEdit}
               />
             ) : (
-              <span className="ito-node-title">
-                {numberLabel !== undefined && (
-                  <span className="ito-node-number">{numberLabel}</span>
-                )}
+              <>
                 {topic.preservedPrefix.length > 0 &&
                   (isStandardTask && !isReadOnly ? (
                     <button
@@ -267,11 +280,18 @@ export function DomNodeLayer({
                   ) : (
                     <span className="ito-node-task-prefix">{topic.preservedPrefix}</span>
                   ))}
-                {renderTitleWithTagPills(
-                  topic.displayTitle.length > 0 ? topic.displayTitle : '(untitled)',
-                  isTaskDone,
-                )}
-              </span>
+                <span className="ito-node-title">
+                  {numberLabel !== undefined && (
+                    <span className="ito-node-number">{numberLabel}</span>
+                  )}
+                  {renderTitleWithTagPills(
+                    topic.titleRaw,
+                    topic.displayTitle,
+                    topic.kind === 'central-virtual',
+                    isTaskDone,
+                  )}
+                </span>
+              </>
             )}
 
             {(topic.noteRange !== null ||

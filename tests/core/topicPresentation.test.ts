@@ -7,6 +7,7 @@ import {
   computeSubtreeBounds,
   computeTopicNumbering,
   extractTopicTags,
+  tokenizeTopicTitle,
 } from '../../src/core/view/topicPresentation';
 
 describe('topicPresentation (M2-ui helpers)', () => {
@@ -58,6 +59,26 @@ describe('topicPresentation (M2-ui helpers)', () => {
     expect(parsed.status).toBe('ok');
     if (parsed.status !== 'ok') return;
     expect(collectDocumentTags(parsed.document)).toEqual(['#beta', '#project/alpha', '#重要']);
+  });
+
+  it('keeps node rendering and filter tag extraction identical while ignoring link anchors, heading links, URLs, and inline code', () => {
+    const complexTitle =
+      'See [[Note#Heading]], [[#OnlyHeading]], [x](#anchor), https://example.com/a#frag, `#code-tag`, ![[Embed#Sec]] and #valid';
+
+    const segments = tokenizeTopicTitle(complexTitle);
+    const renderedTags = segments.filter((s) => s.kind === 'tag').map((s) => s.text);
+    const extractedTags = extractTopicTags(complexTitle);
+
+    expect(renderedTags).toEqual(['#valid']);
+    expect(extractedTags).toEqual(['#valid']);
+    expect(segments.map((s) => s.text).join('')).toContain('Note#Heading');
+    expect(segments.map((s) => s.text).join('')).not.toContain('(#anchor)');
+
+    // Virtual root filename with #hash must not pollute document filter tags
+    const noH1 = parseMarkdownToMap('## Section [x](#anchor) [[Note#Heading]] #real', 'File #virtual');
+    expect(noH1.status).toBe('ok');
+    if (noH1.status !== 'ok') return;
+    expect(collectDocumentTags(noH1.document)).toEqual(['#real']);
   });
 
   it('computes document word/char stats and subtree bounds for Fit Selection', () => {

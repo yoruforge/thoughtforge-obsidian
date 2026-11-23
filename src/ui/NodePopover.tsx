@@ -1,3 +1,4 @@
+import type { KeyboardEvent } from 'react';
 import type { TopicLink, TopicNode } from '../core/model';
 import type { Messages } from '../i18n';
 
@@ -18,12 +19,23 @@ export function NodePopover({
   onJumpToSource,
   onOpenLink,
 }: NodePopoverProps) {
+  const handlePopoverKeyDown = (event: KeyboardEvent<HTMLElement>): void => {
+    if (event.key === 'Escape') {
+      event.preventDefault();
+      event.stopPropagation();
+      onClose();
+      return;
+    }
+    event.stopPropagation();
+  };
+
   return (
     <aside
       className="ito-popover"
       role="dialog"
       aria-label={messages.popover.title}
       onClick={(event) => event.stopPropagation()}
+      onKeyDown={handlePopoverKeyDown}
     >
       <div className="ito-popover-header">
         <div className="ito-popover-title-wrap">

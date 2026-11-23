@@ -1,4 +1,4 @@
-import { useEffect, useRef } from 'react';
+import { useEffect, useRef, type KeyboardEvent as ReactKeyboardEvent } from 'react';
 import type {
   BranchEdgeStyle,
   CanvasPattern,
@@ -8,6 +8,7 @@ import type {
   TopicNumberingMode,
 } from '../core/model';
 import type { Messages } from '../i18n';
+import { shouldHandlePopoverDocumentEscape } from './keyboardGuard';
 
 export interface QuickStylePopoverProps {
   readonly settings: PluginSettings;
@@ -59,24 +60,44 @@ export function QuickStylePopover({
   onClose,
 }: QuickStylePopoverProps) {
   const popoverRef = useRef<HTMLElement | null>(null);
+  const onCloseRef = useRef(onClose);
+  onCloseRef.current = onClose;
   const s = messages.styles;
   const setMsg = messages.settings;
+
+  // Move focus into the dialog once on open only (never steal focus on parent re-renders).
+  useEffect(() => {
+    popoverRef.current?.focus({ preventScroll: true });
+  }, []);
 
   useEffect(() => {
     const el = popoverRef.current;
     if (!el) return;
-    el.focus({ preventScroll: true });
     const ownerDoc = el.ownerDocument;
+    const rootEl = el.closest('.ito-root');
     const handleDocKeyDown = (event: KeyboardEvent): void => {
-      if (event.key === 'Escape') {
-        event.preventDefault();
-        event.stopPropagation();
-        onClose();
+      if (!shouldHandlePopoverDocumentEscape(ownerDoc, rootEl, event)) {
+        return;
       }
+      event.preventDefault();
+      event.stopPropagation();
+      onCloseRef.current();
     };
     ownerDoc.addEventListener('keydown', handleDocKeyDown, true);
     return () => ownerDoc.removeEventListener('keydown', handleDocKeyDown, true);
-  }, [onClose]);
+  }, []);
+
+  const handlePopoverKeyDown = (event: ReactKeyboardEvent<HTMLElement>): void => {
+    if (event.key === 'Escape') {
+      event.preventDefault();
+      event.stopPropagation();
+      onCloseRef.current();
+      return;
+    }
+    // Keep Tab/Shift+Tab/Enter/Space/Arrow keys strictly inside the dialog so
+    // they never bubble to .ito-root and trigger map editing commands.
+    event.stopPropagation();
+  };
 
   const themeOptions: readonly SegmentedOption<PluginSettings['themeMode']>[] = [
     { value: 'auto', label: setMsg.themeAuto },
@@ -122,6 +143,7 @@ export function QuickStylePopover({
       role="dialog"
       aria-label={s.title}
       onClick={(event) => event.stopPropagation()}
+      onKeyDown={handlePopoverKeyDown}
     >
       <div className="ito-style-header">
         <strong className="ito-style-title">{s.title}</strong>
