@@ -34,6 +34,11 @@ import {
   computeTopicNumbering,
 } from '../core/view/topicPresentation';
 import {
+  collectAncestorIds,
+  resolveTopicAtLine,
+  resolveTopicBySubpath,
+} from '../core/view/topicResolver';
+import {
   createDocumentRemapIndex,
   type DocumentRemapIndex,
 } from '../core/view/viewStateRemap';
@@ -82,10 +87,25 @@ export interface MindMapActionTriggers {
   readonly fitSelection: () => boolean;
 }
 
+export interface MapRevealRequest {
+  readonly token: number;
+  readonly filePath: string;
+  readonly line?: number;
+  readonly subpath?: string;
+}
+
 export interface MindMapAppProps {
   readonly filePath: string;
   readonly parseResult: ParseResult;
   readonly preferredSelection?: { readonly doc: MindMapDocument; readonly nodeId: string } | null;
+  readonly revealRequest?: MapRevealRequest | null;
+  readonly canGoBack?: boolean;
+  readonly canGoForward?: boolean;
+  readonly backTitle?: string;
+  readonly forwardTitle?: string;
+  readonly onNavigateBack?: () => void;
+  readonly onNavigateForward?: () => void;
+  readonly onSelectedLineChange?: (line: number | undefined) => void;
   readonly themeMode: ResolvedThemeMode;
   readonly settings: PluginSettings;
   readonly messages: Messages;
@@ -146,6 +166,14 @@ export function MindMapApp({
   filePath,
   parseResult,
   preferredSelection = null,
+  revealRequest = null,
+  canGoBack = false,
+  canGoForward = false,
+  backTitle,
+  forwardTitle,
+  onNavigateBack,
+  onNavigateForward,
+  onSelectedLineChange,
   themeMode,
   settings,
   messages,
@@ -213,6 +241,8 @@ export function MindMapApp({
   const isCommandInFlightRef = useRef(false);
   const titleSubmitSeqRef = useRef(0);
   const latestSubmitSeqByTargetRef = useRef<Map<string, number>>(new Map());
+  const lastHandledRevealTokenRef = useRef(0);
+  const pendingRevealFitNodeIdRef = useRef<string | null>(null);
   const prevDocStateRef = useRef<{ readonly filePath: string; readonly doc: MindMapDocument } | null>(
     doc ? { filePath, doc } : null,
   );
@@ -513,6 +543,77 @@ export function MindMapApp({
     }
   }, [settings.layoutMode, layout]);
 
+  // Report active topic header line to host view so history Back restores the exact topic
+  useEffect(() => {
+    if (!onSelectedLineChange) return;
+    if (!doc || effectiveSelectedId === null) {
+      onSelectedLineChange(undefined);
+      return;
+    }
+    const node = doc.nodes.get(effectiveSelectedId);
+    onSelectedLineChange(node?.headerLine);
+  }, [doc, effectiveSelectedId, onSelectedLineChange]);
+
+  // Process explicit reveal requests (from cursor-to-map, [[Note#Heading]] / [[Note#^blk]], or history)
+  useEffect(() => {
+    if (
+      !doc ||
+      !revealRequest ||
+      revealRequest.filePath !== filePath ||
+      revealRequest.token === lastHandledRevealTokenRef.current
+    ) {
+      return;
+    }
+    lastHandledRevealTokenRef.current = revealRequest.token;
+
+    let targetId: string | null = null;
+    if (revealRequest.subpath !== undefined) {
+      targetId = resolveTopicBySubpath(doc, revealRequest.subpath);
+    }
+    if (targetId === null && revealRequest.line !== undefined) {
+      targetId = resolveTopicAtLine(doc, revealRequest.line);
+    }
+    const resolvedId = targetId ?? doc.rootId;
+
+    const ancestors = collectAncestorIds(doc, resolvedId);
+    if (ancestors.length > 0) {
+      setBaseCollapsedIds((prev) => {
+        let changed = false;
+        const next = new Set(prev);
+        for (const ancId of ancestors) {
+          if (next.delete(ancId)) {
+            changed = true;
+          }
+        }
+        return changed ? next : prev;
+      });
+    }
+
+    setPopoverOpen(false);
+    setStylesOpen(false);
+    setEditingSession(null);
+    selectNode(resolvedId, doc, filePath);
+    pendingRevealFitNodeIdRef.current = resolvedId;
+  }, [doc, filePath, revealRequest, selectNode]);
+
+  // Fit/center camera onto a newly revealed topic once layout reflects any expanded ancestors
+  useEffect(() => {
+    const targetId = pendingRevealFitNodeIdRef.current;
+    if (!targetId || !doc || !layout) return;
+    const ln = layout.nodes.get(targetId);
+    if (!ln) return;
+    pendingRevealFitNodeIdRef.current = null;
+    hasInitialFitRef.current = true;
+    if (targetId === doc.rootId) {
+      setCamera(computeFitCamera(layout.bounds, viewportSizeRef.current));
+      return;
+    }
+    const subBounds = computeSubtreeBounds(doc, layout, targetId);
+    if (subBounds) {
+      setCamera(computeFitCamera(subBounds, viewportSizeRef.current));
+    }
+  }, [doc, layout]);
+
   // Auto-pan camera smoothly by the minimum delta when keyboard navigation or edits
   // select a node outside the safe viewport margin (leaving bottom clearance for floating HUD).
   useEffect(() => {
@@ -608,6 +709,23 @@ export function MindMapApp({
     setStructuredFilter(next);
     if (!hasActiveStructuredFilter(next)) {
       setUserOpenedDuringFilterIds(new Set());
+    }
+  }, []);
+
+  const handleToggleTagFilter = useCallback((tag: string, returnFocusToCanvas = false) => {
+    setStructuredFilter((prev) => {
+      const isSame = prev.tag?.toLowerCase() === tag.toLowerCase();
+      const next: StructuredFilterCriteria = {
+        ...prev,
+        tag: isSame ? undefined : tag,
+      };
+      if (!hasActiveStructuredFilter(next)) {
+        setUserOpenedDuringFilterIds(new Set());
+      }
+      return next;
+    });
+    if (returnFocusToCanvas) {
+      rootRef.current?.focus({ preventScroll: true });
     }
   }, []);
 
@@ -1512,6 +1630,19 @@ export function MindMapApp({
 
     const modKey = event.metaKey || event.ctrlKey;
 
+    if (!modKey && event.altKey && !event.shiftKey) {
+      if (event.key === 'ArrowLeft' && canGoBack && onNavigateBack) {
+        event.preventDefault();
+        onNavigateBack();
+        return;
+      }
+      if (event.key === 'ArrowRight' && canGoForward && onNavigateForward) {
+        event.preventDefault();
+        onNavigateForward();
+        return;
+      }
+    }
+
     if (modKey && !event.altKey) {
       // Zoom fit shortcut (Cmd/Ctrl + 0) / Fit selection (Cmd/Ctrl + Shift + 0)
       if (event.key === '0' || (event.shiftKey && event.code === 'Digit0')) {
@@ -1806,9 +1937,21 @@ export function MindMapApp({
         <div className="ito-blocked-state" role="alert">
           <h3 className="ito-blocked-title">{messages.blocked.title}</h3>
           <p className="ito-blocked-reason">{messages.blocked.reasons[parseResult.reason]}</p>
-          <button type="button" className="ito-btn ito-btn-primary" onClick={() => onOpenMarkdown()}>
-            {messages.blocked.openInMarkdown}
-          </button>
+          <div className="ito-blocked-actions">
+            {canGoBack && onNavigateBack && (
+              <button
+                type="button"
+                className="ito-btn ito-nav-back-btn"
+                title={backTitle ?? messages.toolbar.navBack}
+                onClick={onNavigateBack}
+              >
+                ← {messages.toolbar.navBack}
+              </button>
+            )}
+            <button type="button" className="ito-btn ito-btn-primary" onClick={() => onOpenMarkdown()}>
+              {messages.blocked.openInMarkdown}
+            </button>
+          </div>
         </div>
       </div>
     );
@@ -1831,6 +1974,12 @@ export function MindMapApp({
     >
       <Toolbar
         messages={messages}
+        canGoBack={canGoBack}
+        canGoForward={canGoForward}
+        backTitle={backTitle}
+        forwardTitle={forwardTitle}
+        onNavigateBack={onNavigateBack}
+        onNavigateForward={onNavigateForward}
         zoomPercent={zoomPercent}
         focusMode={focusMode}
         filterQuery={filterQuery}
@@ -1863,6 +2012,8 @@ export function MindMapApp({
           imeGuardWindowMs={settings.imeGuardWindowMs}
           inlineEditorLabel={messages.edit.inlineEditorLabel}
           toggleTaskAriaLabel={messages.edit.toggleTaskAriaLabel}
+          tagFilterTooltip={messages.popover.filterByTagTooltip}
+          activeTagFilter={structuredFilter.tag}
           canEdit={onDispatchCommand !== undefined}
           dimmedNodeIds={visibility.dimmedNodeIds}
           matchedNodeIds={visibility.matchedNodeIds}
@@ -1896,6 +2047,7 @@ export function MindMapApp({
           onCancelEdit={handleCancelEdit}
           onDiscardEdit={handleDiscardEdit}
           onToggleTask={handleToggleTask}
+          onToggleTagFilter={(tag) => handleToggleTagFilter(tag, true)}
           onReparentNode={handleReparentNode}
         />
 
@@ -1930,6 +2082,8 @@ export function MindMapApp({
               onDeleteDraft ? (id, expectedRev) => void onDeleteDraft(id, expectedRev) : undefined
             }
             onCopyDraftText={handleCopyDraftText}
+            activeTagFilter={structuredFilter.tag}
+            onToggleTagFilter={handleToggleTagFilter}
             onClose={handleClosePopover}
             onJumpToSource={(line) => onOpenMarkdown(line)}
             onOpenLink={onOpenLink}

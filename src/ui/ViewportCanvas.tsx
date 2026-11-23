@@ -40,6 +40,8 @@ export interface ViewportCanvasProps {
   readonly imeGuardWindowMs: number;
   readonly inlineEditorLabel: string;
   readonly toggleTaskAriaLabel: string;
+  readonly tagFilterTooltip: string;
+  readonly activeTagFilter?: string;
   readonly canEdit: boolean;
   readonly dimmedNodeIds: ReadonlySet<string>;
   readonly matchedNodeIds: ReadonlySet<string>;
@@ -67,6 +69,7 @@ export interface ViewportCanvasProps {
   readonly onCancelEdit: () => void;
   readonly onDiscardEdit: (unsavedValue: string) => void;
   readonly onToggleTask: (nodeId: string) => void;
+  readonly onToggleTagFilter?: (tag: string) => void;
   readonly onReparentNode?: (nodeId: string, targetParentId: string, index: number) => void;
 }
 
@@ -86,6 +89,8 @@ export function ViewportCanvas({
   imeGuardWindowMs,
   inlineEditorLabel,
   toggleTaskAriaLabel,
+  tagFilterTooltip,
+  activeTagFilter,
   canEdit,
   dimmedNodeIds,
   matchedNodeIds,
@@ -108,6 +113,7 @@ export function ViewportCanvas({
   onCancelEdit,
   onDiscardEdit,
   onToggleTask,
+  onToggleTagFilter,
   onReparentNode,
 }: ViewportCanvasProps) {
   const containerRef = useRef<HTMLDivElement | null>(null);
@@ -398,6 +404,8 @@ export function ViewportCanvas({
           imeGuardWindowMs={imeGuardWindowMs}
           inlineEditorLabel={inlineEditorLabel}
           toggleTaskAriaLabel={toggleTaskAriaLabel}
+          tagFilterTooltip={tagFilterTooltip}
+          activeTagFilter={activeTagFilter}
           canEdit={canEdit}
           dimmedNodeIds={dimmedNodeIds}
           matchedNodeIds={matchedNodeIds}
@@ -422,6 +430,7 @@ export function ViewportCanvas({
           onCancelEdit={onCancelEdit}
           onDiscardEdit={onDiscardEdit}
           onToggleTask={onToggleTask}
+          onToggleTagFilter={onToggleTagFilter}
           onStartNodeDrag={handleStartNodeDrag}
         />
       </div>

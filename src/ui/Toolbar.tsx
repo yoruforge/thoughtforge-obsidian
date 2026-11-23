@@ -7,6 +7,12 @@ import { shouldHandlePopoverDocumentEscape } from './keyboardGuard';
 
 export interface ToolbarProps {
   readonly messages: Messages;
+  readonly canGoBack?: boolean;
+  readonly canGoForward?: boolean;
+  readonly backTitle?: string;
+  readonly forwardTitle?: string;
+  readonly onNavigateBack?: () => void;
+  readonly onNavigateForward?: () => void;
   readonly zoomPercent: number;
   readonly focusMode: FocusMode;
   readonly filterQuery: string;
@@ -31,6 +37,12 @@ export interface ToolbarProps {
 
 export function Toolbar({
   messages,
+  canGoBack = false,
+  canGoForward = false,
+  backTitle,
+  forwardTitle,
+  onNavigateBack,
+  onNavigateForward,
   zoomPercent,
   focusMode,
   filterQuery,
@@ -91,6 +103,31 @@ export function Toolbar({
 
   return (
     <header className="ito-toolbar" role="toolbar" aria-label="Mind map controls">
+      {(onNavigateBack || onNavigateForward) && (
+        <div className="ito-toolbar-group ito-toolbar-nav">
+          <button
+            type="button"
+            className="ito-btn ito-btn-icon ito-nav-back-btn"
+            disabled={!canGoBack}
+            title={backTitle ?? messages.toolbar.navBack}
+            aria-label={backTitle ?? messages.toolbar.navBack}
+            onClick={() => onNavigateBack?.()}
+          >
+            ←
+          </button>
+          <button
+            type="button"
+            className="ito-btn ito-btn-icon ito-nav-forward-btn"
+            disabled={!canGoForward}
+            title={forwardTitle ?? messages.toolbar.navForward}
+            aria-label={forwardTitle ?? messages.toolbar.navForward}
+            onClick={() => onNavigateForward?.()}
+          >
+            →
+          </button>
+        </div>
+      )}
+
       <div className="ito-toolbar-group">
         <button type="button" className="ito-btn" title={messages.toolbar.zoomOut} onClick={onZoomOut}>
           −

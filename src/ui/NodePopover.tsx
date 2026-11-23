@@ -7,6 +7,7 @@ import {
   type MutableRefObject,
 } from 'react';
 import type { DraftEntry, MindMapDocument, TopicLink, TopicNode } from '../core/model';
+import { extractTopicTags } from '../core/view/topicPresentation';
 import type { Messages } from '../i18n';
 import type { CommandDispatchOutcome } from '../sync/ports';
 import { createNoteEditingSession, type NoteEditingSession } from './editSession';
@@ -47,6 +48,8 @@ export interface NodePopoverProps {
   ) => void;
   readonly onDeleteDraft?: (draftId: string, expectedRevision?: number) => void;
   readonly onCopyDraftText?: (draftText: string) => void;
+  readonly activeTagFilter?: string;
+  readonly onToggleTagFilter?: (tag: string) => void;
   readonly onClose: () => void;
   readonly onJumpToSource: (line: number) => void;
   readonly onOpenLink: (link: TopicLink, newTab: boolean) => void;
@@ -73,6 +76,8 @@ export function NodePopover({
   onRestoreTitleDraft,
   onDeleteDraft,
   onCopyDraftText,
+  activeTagFilter,
+  onToggleTagFilter,
   onClose,
   onJumpToSource,
   onOpenLink,
@@ -586,7 +591,10 @@ export function NodePopover({
                 <button
                   type="button"
                   className="ito-link-button"
-                  onClick={(event) => onOpenLink(link, event.metaKey || event.ctrlKey)}
+                  disabled={isSaving}
+                  onClick={(event) => {
+                    if (!isSavingRef.current) onOpenLink(link, event.metaKey || event.ctrlKey);
+                  }}
                 >
                   {link.label} ({link.target})
                 </button>
@@ -595,6 +603,35 @@ export function NodePopover({
           </ul>
         </div>
       )}
+
+      {onToggleTagFilter &&
+        (() => {
+          const tags = extractTopicTags(node.titleRaw);
+          if (tags.length === 0) return null;
+          const activeLower = activeTagFilter?.toLowerCase();
+          return (
+            <div className="ito-popover-section">
+              <div className="ito-popover-section-title">{messages.popover.tagsHeading}</div>
+              <div className="ito-filter-tags-list">
+                {tags.map((tag) => {
+                  const isActive = activeLower !== undefined && tag.toLowerCase() === activeLower;
+                  return (
+                    <button
+                      key={tag}
+                      type="button"
+                      className={`ito-tag-chip ${isActive ? 'ito-tag-chip-active' : ''}`}
+                      title={`${messages.popover.filterByTagTooltip}: ${tag}`}
+                      aria-pressed={isActive}
+                      onClick={() => onToggleTagFilter(tag)}
+                    >
+                      {tag}
+                    </button>
+                  );
+                })}
+              </div>
+            </div>
+          );
+        })()}
 
       {node.unmappedBlocks.length > 0 && (
         <div className="ito-popover-section">

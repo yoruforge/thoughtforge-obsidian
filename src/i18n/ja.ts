@@ -5,6 +5,9 @@ export const ja: Messages = {
   commands: {
     openAsMap: '現在のノートをマインドマップで開く',
     openMarkdownBeside: 'マインドマップの横にMarkdownを開く',
+    revealCursorInMap: 'カーソル位置のトピックをマインドマップで表示',
+    navigateBack: 'マインドマップの履歴を戻る',
+    navigateForward: 'マインドマップの履歴を進む',
     undo: 'マインドマップの直前の編集を元に戻す（Undo）',
     redo: 'マインドマップの編集をやり直す（Redo）',
     toggleTask: '選択中トピックのタスク完了を切り替える',
@@ -14,6 +17,8 @@ export const ja: Messages = {
     pasteBranch: 'コピーした枝を選択トピックの子として貼り付ける',
   },
   toolbar: {
+    navBack: '前のマップへ戻る [Alt+←]',
+    navForward: '次のマップへ進む [Alt+→]',
     zoomIn: '拡大',
     zoomOut: '縮小',
     zoomReset: '100%に戻す',
@@ -123,6 +128,8 @@ export const ja: Messages = {
     draftSavedContextLine: '保存時: 行',
     draftSavedContextParent: '親パス',
     unmappedHeading: '保護中の未対応ブロック',
+    tagsHeading: 'タイトル内のタグ',
+    filterByTagTooltip: 'このタグで絞り込み',
     linksHeading: 'タイトル内のリンク',
     jumpToSource: 'Markdownの該当行へ移動',
     lineUnit: '行',

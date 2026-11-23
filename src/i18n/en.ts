@@ -3,6 +3,9 @@ export const en = {
   commands: {
     openAsMap: 'Open current note as mind map',
     openMarkdownBeside: 'Open Markdown beside mind map',
+    revealCursorInMap: 'Reveal current cursor topic in mind map',
+    navigateBack: 'Navigate back in mind map history',
+    navigateForward: 'Navigate forward in mind map history',
     undo: 'Undo last mind map edit',
     redo: 'Redo last mind map edit',
     toggleTask: 'Toggle task checkbox on selected topic',
@@ -12,6 +15,8 @@ export const en = {
     pasteBranch: 'Paste branch as child of selected topic',
   },
   toolbar: {
+    navBack: 'Back [Alt+←]',
+    navForward: 'Forward [Alt+→]',
     zoomIn: 'Zoom in',
     zoomOut: 'Zoom out',
     zoomReset: 'Reset zoom (100%)',
@@ -121,6 +126,8 @@ export const en = {
     draftSavedContextLine: 'Saved line',
     draftSavedContextParent: 'Path',
     unmappedHeading: 'Preserved non-map blocks',
+    tagsHeading: 'Tags in title',
+    filterByTagTooltip: 'Filter map by tag',
     linksHeading: 'Links in title',
     jumpToSource: 'Jump to Markdown line',
     lineUnit: 'lines',
