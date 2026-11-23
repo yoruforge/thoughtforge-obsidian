@@ -29,6 +29,8 @@ function isValidDraftEntry(value: unknown): value is DraftEntry {
     (entry['targetAncestorPath'] === undefined ||
       (Array.isArray(entry['targetAncestorPath']) &&
         entry['targetAncestorPath'].every((seg) => typeof seg === 'string'))) &&
+    (entry['targetHadIdenticalSibling'] === undefined ||
+      typeof entry['targetHadIdenticalSibling'] === 'boolean') &&
     typeof entry['baseContentHash'] === 'string' &&
     typeof entry['text'] === 'string' &&
     typeof entry['savedAt'] === 'number'

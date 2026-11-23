@@ -91,6 +91,8 @@ export interface MindMapAppProps {
     targetTitleRaw: string,
     targetHeaderLine: number,
     targetAncestorPath?: readonly string[],
+    targetOwnRangeHash?: string,
+    baseContentHash?: string,
   ) => Promise<void>;
   readonly onCopyBranchSubtree?: (node: TopicNode) => Promise<boolean>;
   readonly onReadBranchClipboard?: () => Promise<string | null>;
@@ -532,6 +534,7 @@ export function MindMapApp({
           targetHeaderLine: lastSession.targetHeaderLine,
           targetOwnRangeHash: lastSession.guard.expectedOwnRangeHash,
           targetAncestorPath: lastSession.targetAncestorPath,
+          targetHadIdenticalSibling: lastSession.targetHadIdenticalSibling,
           baseContentHash: lastSession.guard.expectedContentHash,
           text: unsavedValue,
         });
@@ -548,6 +551,7 @@ export function MindMapApp({
         initialTitleRaw,
         targetHeaderLine,
         targetAncestorPath,
+        targetHadIdenticalSibling,
         restoredDraftId,
         guard,
       } = session;
@@ -567,6 +571,7 @@ export function MindMapApp({
             targetHeaderLine,
             targetOwnRangeHash: guard.expectedOwnRangeHash,
             targetAncestorPath,
+            targetHadIdenticalSibling,
             baseContentHash: guard.expectedContentHash,
             text: nextTitle,
           });
@@ -582,6 +587,8 @@ export function MindMapApp({
             initialTitleRaw,
             targetHeaderLine,
             targetAncestorPath,
+            guard.expectedOwnRangeHash,
+            guard.expectedContentHash,
           );
           if (restoredDraftId !== undefined) {
             void onDeleteDraft?.(restoredDraftId);
@@ -594,6 +601,7 @@ export function MindMapApp({
             targetHeaderLine,
             targetOwnRangeHash: guard.expectedOwnRangeHash,
             targetAncestorPath,
+            targetHadIdenticalSibling,
             baseContentHash: guard.expectedContentHash,
             text: nextTitle,
           });
@@ -622,6 +630,7 @@ export function MindMapApp({
         targetTitleRaw,
         targetHeaderLine,
         targetAncestorPath,
+        targetHadIdenticalSibling,
         restoredDraftId,
         guard,
       } = session;
@@ -638,6 +647,7 @@ export function MindMapApp({
             targetHeaderLine,
             targetOwnRangeHash: guard.expectedOwnRangeHash,
             targetAncestorPath,
+            targetHadIdenticalSibling,
             baseContentHash: guard.expectedContentHash,
             text: nextNoteBody,
           });
@@ -654,6 +664,8 @@ export function MindMapApp({
           targetTitleRaw,
           targetHeaderLine,
           targetAncestorPath,
+          guard.expectedOwnRangeHash,
+          guard.expectedContentHash,
         );
         if (restoredDraftId !== undefined) {
           void onDeleteDraft?.(restoredDraftId);
@@ -666,6 +678,7 @@ export function MindMapApp({
           targetHeaderLine,
           targetOwnRangeHash: guard.expectedOwnRangeHash,
           targetAncestorPath,
+          targetHadIdenticalSibling,
           baseContentHash: guard.expectedContentHash,
           text: nextNoteBody,
         });
@@ -696,6 +709,7 @@ export function MindMapApp({
         targetHeaderLine: session.targetHeaderLine,
         targetOwnRangeHash: session.guard.expectedOwnRangeHash,
         targetAncestorPath: session.targetAncestorPath,
+        targetHadIdenticalSibling: session.targetHadIdenticalSibling,
         baseContentHash: session.guard.expectedContentHash,
         text: unsavedBody,
       });
@@ -830,6 +844,7 @@ export function MindMapApp({
         initialTitleRaw,
         targetHeaderLine,
         targetAncestorPath,
+        targetHadIdenticalSibling,
         restoredDraftId,
         guard,
       } = session;
@@ -846,6 +861,7 @@ export function MindMapApp({
             targetHeaderLine,
             targetOwnRangeHash: guard.expectedOwnRangeHash,
             targetAncestorPath,
+            targetHadIdenticalSibling,
             baseContentHash: guard.expectedContentHash,
             text: fullValue,
           });
@@ -873,6 +889,8 @@ export function MindMapApp({
             initialTitleRaw,
             targetHeaderLine,
             targetAncestorPath,
+            guard.expectedOwnRangeHash,
+            guard.expectedContentHash,
           );
           if (restoredDraftId !== undefined) {
             void onDeleteDraft?.(restoredDraftId);

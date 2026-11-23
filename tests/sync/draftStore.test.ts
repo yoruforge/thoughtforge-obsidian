@@ -4,6 +4,7 @@ import { parseMarkdownToMap } from '../../src/core/parser';
 import {
   buildAncestorPath,
   DraftStore,
+  hasIdenticalStructuralSibling,
   resolveDraftNodeId,
   resolveDraftTarget,
 } from '../../src/sync/DraftStore';
@@ -269,5 +270,210 @@ describe('DraftStore (M2-c field:title|note persistence & fail-closed resolution
     };
     expect(resolveDraftTarget(parsedAfter.document, legacy).status).toBe('ambiguous');
     expect(resolveDraftNodeId(parsedAfter.document, legacy)).toBeNull();
+  });
+
+  it('fails closed when a same-parent duplicate sibling is renamed/deleted or target body changes externally', async () => {
+    // 1. Codex P1 repro: two "メモ" under the same parent with distinct bodies; 2nd is renamed to "別名"
+    const beforeMd = [
+      '# Root',
+      '## Parent',
+      '- メモ',
+      '  Body 1',
+      '- メモ',
+      '  Body 2',
+      '',
+    ].join('\n');
+    const parsedBefore = parseMarkdownToMap(beforeMd, 'Root');
+    if (parsedBefore.status !== 'ok') throw new Error('parse failed');
+    const beforeMemos = [...parsedBefore.document.nodes.values()].filter(
+      (n) => n.titleRaw === 'メモ',
+    );
+    expect(beforeMemos).toHaveLength(2);
+    const [memo1Before, memo2Before] = beforeMemos;
+    if (!memo1Before || !memo2Before) throw new Error('missing memos');
+    expect(hasIdenticalStructuralSibling(parsedBefore.document, memo2Before)).toBe(false);
+
+    const store = new DraftStore([], async () => undefined, 'dev-same-parent');
+    const draft2 = await store.saveDraft({
+      filePath: 'notes/same-parent.md',
+      field: 'note',
+      targetTitleRaw: memo2Before.titleRaw,
+      targetHeaderLine: memo2Before.headerLine,
+      targetOwnRangeHash: memo2Before.ownRangeHash,
+      targetAncestorPath: buildAncestorPath(parsedBefore.document, memo2Before),
+      targetHadIdenticalSibling: hasIdenticalStructuralSibling(parsedBefore.document, memo2Before),
+      baseContentHash: parsedBefore.document.contentHash,
+      text: 'Draft for 2nd memo',
+    });
+
+    // Positive check: inserting blank lines above Parent (without touching either メモ) still uniquely matches 2nd メモ
+    const blankShiftedMd = [
+      '# Root',
+      '',
+      '',
+      '## Parent',
+      '- メモ',
+      '  Body 1',
+      '- メモ',
+      '  Body 2',
+      '',
+    ].join('\n');
+    const parsedBlankShifted = parseMarkdownToMap(blankShiftedMd, 'Root');
+    if (parsedBlankShifted.status !== 'ok') throw new Error('parse failed');
+    const shiftedMemo2 = [...parsedBlankShifted.document.nodes.values()].filter(
+      (n) => n.titleRaw === 'メモ',
+    )[1];
+    if (!shiftedMemo2) throw new Error('missing shifted memo2');
+    expect(resolveDraftTarget(parsedBlankShifted.document, draft2)).toEqual({
+      status: 'matched',
+      nodeId: shiftedMemo2.id,
+    });
+
+    // Rename 2nd メモ -> 別名 AND add blank lines so 1st メモ even shifts onto 2nd メモ's original headerLine (4)
+    const renamedMd = [
+      '# Root',
+      '',
+      '',
+      '## Parent',
+      '- メモ',
+      '  Body 1',
+      '- 別名',
+      '  Body 2',
+      '',
+    ].join('\n');
+    const parsedRenamed = parseMarkdownToMap(renamedMd, 'Root');
+    if (parsedRenamed.status !== 'ok') throw new Error('parse failed');
+    const survivingMemo1 = [...parsedRenamed.document.nodes.values()].find(
+      (n) => n.titleRaw === 'メモ',
+    );
+    if (!survivingMemo1) throw new Error('missing surviving memo1');
+    expect(survivingMemo1.headerLine).toBe(memo2Before.headerLine); // Same line 4!
+
+    // MUST fail closed as ambiguous (never auto-fill into surviving 1st メモ!)
+    expect(resolveDraftTarget(parsedRenamed.document, draft2)).toEqual({
+      status: 'ambiguous',
+      candidateNodeIds: [survivingMemo1.id],
+    });
+    expect(resolveDraftNodeId(parsedRenamed.document, draft2)).toBeNull();
+
+    // Saving 1st メモ (even on the exact shifted line 4!) MUST NOT delete 2nd メモ's draft
+    await store.deleteMatchingDraft(
+      'notes/same-parent.md',
+      'note',
+      survivingMemo1.titleRaw,
+      survivingMemo1.headerLine,
+      buildAncestorPath(parsedRenamed.document, survivingMemo1),
+      survivingMemo1.ownRangeHash,
+      parsedRenamed.document.contentHash,
+    );
+    expect(store.listDraftsForFile('notes/same-parent.md')).toHaveLength(1);
+    expect(store.listDraftsForFile('notes/same-parent.md')[0]?.draftId).toBe(draft2.draftId);
+
+    // 2. Multi-branch variant: another branch B also has a メモ, while A's 2nd メモ is renamed
+    const multiBranchRenamedMd = [
+      '# Root',
+      '## Parent',
+      '- メモ',
+      '  Body 1',
+      '- 別名',
+      '  Body 2',
+      '## Other',
+      '- メモ',
+      '  Other body',
+      '',
+    ].join('\n');
+    const parsedMultiRenamed = parseMarkdownToMap(multiBranchRenamedMd, 'Root');
+    if (parsedMultiRenamed.status !== 'ok') throw new Error('parse failed');
+    const parentMemo1 = [...parsedMultiRenamed.document.nodes.values()].find(
+      (n) =>
+        n.titleRaw === 'メモ' &&
+        buildAncestorPath(parsedMultiRenamed.document, n).join('/') === 'Root/Parent',
+    );
+    if (!parentMemo1) throw new Error('missing parentMemo1');
+    expect(resolveDraftTarget(parsedMultiRenamed.document, draft2)).toEqual({
+      status: 'ambiguous',
+      candidateNodeIds: [parentMemo1.id],
+    });
+
+    // 3. Identical EMPTY siblings under same parent (same ownRangeHash!): 2nd renamed -> still ambiguous!
+    const emptyTwinBefore = '# Root\n## Parent\n- メモ\n- メモ\n';
+    const parsedEmptyBefore = parseMarkdownToMap(emptyTwinBefore, 'Root');
+    if (parsedEmptyBefore.status !== 'ok') throw new Error('parse failed');
+    const emptySecond = [...parsedEmptyBefore.document.nodes.values()].filter(
+      (n) => n.titleRaw === 'メモ',
+    )[1];
+    if (!emptySecond) throw new Error('missing emptySecond');
+    expect(hasIdenticalStructuralSibling(parsedEmptyBefore.document, emptySecond)).toBe(true);
+
+    const emptyDraft = await store.saveDraft({
+      filePath: 'notes/empty-twins.md',
+      field: 'note',
+      targetTitleRaw: emptySecond.titleRaw,
+      targetHeaderLine: emptySecond.headerLine,
+      targetOwnRangeHash: emptySecond.ownRangeHash,
+      targetAncestorPath: buildAncestorPath(parsedEmptyBefore.document, emptySecond),
+      targetHadIdenticalSibling: hasIdenticalStructuralSibling(
+        parsedEmptyBefore.document,
+        emptySecond,
+      ),
+      baseContentHash: parsedEmptyBefore.document.contentHash,
+      text: 'Empty 2nd memo draft',
+    });
+
+    const emptyTwinAfter = '# Root\n\n## Parent\n- メモ\n- 別名\n';
+    const parsedEmptyAfter = parseMarkdownToMap(emptyTwinAfter, 'Root');
+    if (parsedEmptyAfter.status !== 'ok') throw new Error('parse failed');
+    const emptySurviving = [...parsedEmptyAfter.document.nodes.values()].find(
+      (n) => n.titleRaw === 'メモ',
+    );
+    if (!emptySurviving) throw new Error('missing emptySurviving');
+    expect(emptySurviving.headerLine).toBe(emptySecond.headerLine); // Shifted onto line 3!
+    expect(resolveDraftTarget(parsedEmptyAfter.document, emptyDraft)).toEqual({
+      status: 'ambiguous',
+      candidateNodeIds: [emptySurviving.id],
+    });
+    // Saving surviving empty メモ on shifted line 3 must NOT delete empty 2nd メモ's draft
+    await store.deleteMatchingDraft(
+      'notes/empty-twins.md',
+      'note',
+      emptySurviving.titleRaw,
+      emptySurviving.headerLine,
+      buildAncestorPath(parsedEmptyAfter.document, emptySurviving),
+      emptySurviving.ownRangeHash,
+      parsedEmptyAfter.document.contentHash,
+    );
+    expect(store.listDraftsForFile('notes/empty-twins.md')).toHaveLength(1);
+
+    // 4. Target topic's own body externally modified -> fail closed to ambiguous (don't clobber external edit)
+    const editedBefore = '# Root\n## Unique\nOriginal body\n';
+    const editedAfter = '# Root\n## Unique\nExternally edited on mobile\n';
+    const pEditBefore = parseMarkdownToMap(editedBefore, 'Root');
+    const pEditAfter = parseMarkdownToMap(editedAfter, 'Root');
+    if (pEditBefore.status !== 'ok' || pEditAfter.status !== 'ok') throw new Error('parse failed');
+    const uniqueBefore = [...pEditBefore.document.nodes.values()].find(
+      (n) => n.titleRaw === 'Unique',
+    );
+    const uniqueAfter = [...pEditAfter.document.nodes.values()].find(
+      (n) => n.titleRaw === 'Unique',
+    );
+    if (!uniqueBefore || !uniqueAfter) throw new Error('missing unique');
+    const uniqueDraft: DraftEntry = {
+      draftId: 'd-unique-external',
+      deviceId: 'dev',
+      filePath: 'notes/u.md',
+      field: 'note',
+      targetTitleRaw: 'Unique',
+      targetHeaderLine: uniqueBefore.headerLine,
+      targetOwnRangeHash: uniqueBefore.ownRangeHash,
+      targetAncestorPath: buildAncestorPath(pEditBefore.document, uniqueBefore),
+      targetHadIdenticalSibling: false,
+      baseContentHash: pEditBefore.document.contentHash,
+      text: 'Stale draft',
+      savedAt: 1,
+    };
+    expect(resolveDraftTarget(pEditAfter.document, uniqueDraft)).toEqual({
+      status: 'ambiguous',
+      candidateNodeIds: [uniqueAfter.id],
+    });
   });
 });

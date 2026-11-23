@@ -10,6 +10,7 @@ export interface SaveDraftInput {
   readonly targetHeaderLine?: number;
   readonly targetOwnRangeHash?: string;
   readonly targetAncestorPath?: readonly string[];
+  readonly targetHadIdenticalSibling?: boolean;
   readonly baseContentHash: string;
   readonly text: string;
 }
@@ -19,7 +20,9 @@ export interface DraftIdentityKey {
   readonly field: 'title' | 'note';
   readonly targetTitleRaw: string;
   readonly targetHeaderLine?: number;
+  readonly targetOwnRangeHash?: string;
   readonly targetAncestorPath?: readonly string[];
+  readonly baseContentHash?: string;
 }
 
 export type DraftResolution =
@@ -59,6 +62,25 @@ export function buildAncestorPath(doc: MindMapDocument, node: TopicNode): readon
   return path;
 }
 
+/**
+ * Returns true if another node in `doc` shares identical (titleRaw, ancestorPath, ownRangeHash)
+ * with `node` (for example, two empty "- メモ" siblings under the same parent).
+ */
+export function hasIdenticalStructuralSibling(doc: MindMapDocument, node: TopicNode): boolean {
+  const targetPath = buildAncestorPath(doc, node);
+  for (const other of doc.nodes.values()) {
+    if (other.id === node.id) continue;
+    if (
+      other.titleRaw === node.titleRaw &&
+      other.ownRangeHash === node.ownRangeHash &&
+      sameStringArray(buildAncestorPath(doc, other), targetPath)
+    ) {
+      return true;
+    }
+  }
+  return false;
+}
+
 function isSameDraftTarget(entry: DraftEntry, key: DraftIdentityKey): boolean {
   if (
     entry.filePath !== key.filePath ||
@@ -72,23 +94,34 @@ function isSameDraftTarget(entry: DraftEntry, key: DraftIdentityKey): boolean {
       return false;
     }
   }
+  if (entry.targetOwnRangeHash !== undefined && key.targetOwnRangeHash !== undefined) {
+    if (entry.targetOwnRangeHash !== key.targetOwnRangeHash) {
+      return false;
+    }
+  }
+  if (
+    entry.targetHadIdenticalSibling === true &&
+    key.baseContentHash !== undefined &&
+    entry.baseContentHash !== key.baseContentHash
+  ) {
+    return false;
+  }
   return entry.targetHeaderLine === key.targetHeaderLine;
 }
 
 /**
  * Resolves which topic a draft belongs to in the current document using strictly fail-closed
  * structural identity checks (never guessing by nearest line number):
- * - Single candidate: matched only when ancestor path agrees (or is absent on legacy drafts);
- *   if ancestor path differs (e.g. original branch deleted or renamed), marked 'ambiguous' so a
- *   deleted branch's draft is never auto-filled into a surviving identically-titled topic even
- *   when both topics had identical empty raw text (`ownRangeHash`).
- * - Multiple same-titled candidates:
- *   1. Exact unchanged document hash + exact saved headerLine -> matched
- *   2. Exact ancestorPath filter:
- *      - 0 matches -> 'ambiguous' immediately (never fall back to ownRangeHash across branches)
- *      - 1 match -> 'matched'
- *      - >1 matches (same-parent siblings) -> narrow by exact ownRangeHash within pathMatches only
- *   3. Otherwise -> 'ambiguous' (user explicitly confirms restore target; never auto-filled).
+ * 1. Byte-identical document (`doc.contentHash === draft.baseContentHash`):
+ *    - Exact `targetHeaderLine` uniquely identifies any topic (even identical empty siblings).
+ *    - Legacy drafts without `targetHeaderLine` match iff the title is unique.
+ * 2. Modified document (`doc.contentHash !== draft.baseContentHash`):
+ *    - Requires FULL structural proof: exact `targetAncestorPath` AND exact `targetOwnRangeHash`
+ *      matching a single topic, AND no pre-existing indistinguishable clone under the same parent
+ *      (`targetHadIdenticalSibling !== true`).
+ *    - Otherwise fails closed as `'ambiguous'` so a renamed/deleted sibling's draft (or a draft
+ *      on an externally edited topic) is NEVER auto-filled into the wrong topic or over edits;
+ *      the user explicitly confirms via the "Restore here" banner instead.
  */
 export function resolveDraftTarget(doc: MindMapDocument, draft: DraftEntry): DraftResolution {
   const candidates = [...doc.nodes.values()].filter(
@@ -99,64 +132,68 @@ export function resolveDraftTarget(doc: MindMapDocument, draft: DraftEntry): Dra
     return { status: 'unmatched' };
   }
 
-  if (candidates.length === 1) {
-    const only = candidates[0];
-    if (!only) return { status: 'unmatched' };
-    if (draft.targetAncestorPath !== undefined) {
-      const actualPath = buildAncestorPath(doc, only);
-      if (sameStringArray(actualPath, draft.targetAncestorPath)) {
-        return { status: 'matched', nodeId: only.id };
+  // 1. Byte-identical document since draft save
+  if (doc.contentHash === draft.baseContentHash) {
+    if (draft.targetHeaderLine !== undefined) {
+      const exactLine = candidates.find((n) => n.headerLine === draft.targetHeaderLine);
+      if (exactLine) {
+        return { status: 'matched', nodeId: exactLine.id };
       }
-      // Surviving topic lives under a different branch than where the draft was created:
-      // fail closed and require explicit user confirmation instead of auto-filling.
-      return { status: 'ambiguous', candidateNodeIds: [only.id] };
-    }
-    return { status: 'matched', nodeId: only.id };
-  }
-
-  // Multiple topics share targetTitleRaw:
-  // 1. Byte-identical document since draft save + exact header line -> unambiguous
-  if (doc.contentHash === draft.baseContentHash && draft.targetHeaderLine !== undefined) {
-    const exactLineMatches = candidates.filter((n) => n.headerLine === draft.targetHeaderLine);
-    if (exactLineMatches.length === 1 && exactLineMatches[0]) {
-      return { status: 'matched', nodeId: exactLineMatches[0].id };
-    }
-  }
-
-  // 2. Narrow strictly by ancestor path (immune to blank-line / line-number shifts above)
-  if (draft.targetAncestorPath !== undefined) {
-    const pathMatches = candidates.filter((n) =>
-      sameStringArray(buildAncestorPath(doc, n), draft.targetAncestorPath),
-    );
-    if (pathMatches.length === 1 && pathMatches[0]) {
-      return { status: 'matched', nodeId: pathMatches[0].id };
-    }
-    if (pathMatches.length === 0) {
-      // Original branch no longer matches any candidate (deleted/renamed):
-      // fail closed rather than matching a different branch by ownRangeHash.
       return {
         status: 'ambiguous',
         candidateNodeIds: candidates.map((n) => n.id),
       };
     }
-    // 3. Multiple same-titled siblings under the SAME parent:
-    // narrow by exact ownRangeHash within `pathMatches` only.
-    if (draft.targetOwnRangeHash !== undefined) {
-      const hashMatches = pathMatches.filter((n) => n.ownRangeHash === draft.targetOwnRangeHash);
-      if (hashMatches.length === 1 && hashMatches[0]) {
-        return { status: 'matched', nodeId: hashMatches[0].id };
-      }
+    if (candidates.length === 1 && candidates[0]) {
+      return { status: 'matched', nodeId: candidates[0].id };
     }
     return {
       status: 'ambiguous',
-      candidateNodeIds: pathMatches.map((n) => n.id),
+      candidateNodeIds: candidates.map((n) => n.id),
     };
   }
 
-  // 4. Legacy draft without ancestorPath on duplicate titles -> fail closed
+  // 2. Document changed since draft save: require full structural proof
+  if (
+    draft.targetAncestorPath === undefined ||
+    draft.targetOwnRangeHash === undefined ||
+    draft.targetHadIdenticalSibling === true
+  ) {
+    const hintCandidates =
+      draft.targetAncestorPath !== undefined
+        ? candidates.filter((n) =>
+            sameStringArray(buildAncestorPath(doc, n), draft.targetAncestorPath),
+          )
+        : candidates;
+    return {
+      status: 'ambiguous',
+      candidateNodeIds: (hintCandidates.length > 0 ? hintCandidates : candidates).map((n) => n.id),
+    };
+  }
+
+  const pathMatches = candidates.filter((n) =>
+    sameStringArray(buildAncestorPath(doc, n), draft.targetAncestorPath),
+  );
+  if (pathMatches.length === 0) {
+    // Original branch deleted or renamed: fail closed (never match another branch by ownRangeHash).
+    return {
+      status: 'ambiguous',
+      candidateNodeIds: candidates.map((n) => n.id),
+    };
+  }
+
+  const exactStructuralMatches = pathMatches.filter(
+    (n) => n.ownRangeHash === draft.targetOwnRangeHash,
+  );
+  if (exactStructuralMatches.length === 1 && exactStructuralMatches[0]) {
+    return { status: 'matched', nodeId: exactStructuralMatches[0].id };
+  }
+
+  // Either 0 hash matches (same-parent sibling renamed/deleted or target body externally edited)
+  // or >1 hash matches (multiple identical siblings under the same parent): fail closed.
   return {
     status: 'ambiguous',
-    candidateNodeIds: candidates.map((n) => n.id),
+    candidateNodeIds: pathMatches.map((n) => n.id),
   };
 }
 
@@ -223,6 +260,8 @@ export class DraftStore {
     targetTitleRaw: string,
     targetHeaderLine?: number,
     targetAncestorPath?: readonly string[],
+    targetOwnRangeHash?: string,
+    baseContentHash?: string,
   ): DraftEntry | undefined {
     return this.drafts.find((entry) =>
       isSameDraftTarget(entry, {
@@ -230,7 +269,9 @@ export class DraftStore {
         field,
         targetTitleRaw,
         targetHeaderLine,
+        targetOwnRangeHash,
         targetAncestorPath,
+        baseContentHash,
       }),
     );
   }
@@ -247,7 +288,9 @@ export class DraftStore {
         field: input.field,
         targetTitleRaw: input.targetTitleRaw,
         targetHeaderLine: input.targetHeaderLine,
+        targetOwnRangeHash: input.targetOwnRangeHash,
         targetAncestorPath: input.targetAncestorPath,
+        baseContentHash: input.baseContentHash,
       }),
     );
 
@@ -266,6 +309,9 @@ export class DraftStore {
         : {}),
       ...(input.targetAncestorPath !== undefined
         ? { targetAncestorPath: [...input.targetAncestorPath] }
+        : {}),
+      ...(input.targetHadIdenticalSibling !== undefined
+        ? { targetHadIdenticalSibling: input.targetHadIdenticalSibling }
         : {}),
       baseContentHash: input.baseContentHash,
       text: clampedText,
@@ -305,6 +351,8 @@ export class DraftStore {
     targetTitleRaw: string,
     targetHeaderLine?: number,
     targetAncestorPath?: readonly string[],
+    targetOwnRangeHash?: string,
+    baseContentHash?: string,
   ): Promise<void> {
     const existing = this.findDraft(
       filePath,
@@ -312,6 +360,8 @@ export class DraftStore {
       targetTitleRaw,
       targetHeaderLine,
       targetAncestorPath,
+      targetOwnRangeHash,
+      baseContentHash,
     );
     if (!existing) return;
     await this.deleteDraft(existing.draftId);
