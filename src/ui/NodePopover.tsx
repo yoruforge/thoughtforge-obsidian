@@ -417,7 +417,7 @@ export function NodePopover({
               className="ito-note-editor-textarea"
               rows={5}
               value={draftText}
-              disabled={isSaving}
+              readOnly={isSaving}
               placeholder={messages.popover.noteEditPlaceholder}
               aria-label={messages.popover.noteHeading}
               onChange={(event) => setDraftText(event.target.value)}

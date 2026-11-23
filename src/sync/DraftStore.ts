@@ -22,6 +22,7 @@ export interface DraftIdentityKey {
   readonly targetHeaderLine?: number;
   readonly targetOwnRangeHash?: string;
   readonly targetAncestorPath?: readonly string[];
+  readonly targetHadIdenticalSibling?: boolean;
   readonly baseContentHash?: string;
 }
 
@@ -81,6 +82,20 @@ export function hasIdenticalStructuralSibling(doc: MindMapDocument, node: TopicN
   return false;
 }
 
+/**
+ * Returns true only when `entry` carries complete structural identity proof captured at save time
+ * (ancestorPath + ownRangeHash + explicitly proven `targetHadIdenticalSibling === false`).
+ * Legacy drafts (e.g. from PR #6 without `targetHadIdenticalSibling`) return false and fail closed
+ * whenever the document has changed since `baseContentHash`.
+ */
+function hasFullCrossEditStructuralProof(entry: DraftEntry): boolean {
+  return (
+    entry.targetAncestorPath !== undefined &&
+    entry.targetOwnRangeHash !== undefined &&
+    entry.targetHadIdenticalSibling === false
+  );
+}
+
 function isSameDraftTarget(entry: DraftEntry, key: DraftIdentityKey): boolean {
   if (
     entry.filePath !== key.filePath ||
@@ -100,7 +115,7 @@ function isSameDraftTarget(entry: DraftEntry, key: DraftIdentityKey): boolean {
     }
   }
   if (
-    entry.targetHadIdenticalSibling === true &&
+    (!hasFullCrossEditStructuralProof(entry) || key.targetHadIdenticalSibling === true) &&
     key.baseContentHash !== undefined &&
     entry.baseContentHash !== key.baseContentHash
   ) {
@@ -113,15 +128,17 @@ function isSameDraftTarget(entry: DraftEntry, key: DraftIdentityKey): boolean {
  * Resolves which topic a draft belongs to in the current document using strictly fail-closed
  * structural identity checks (never guessing by nearest line number):
  * 1. Byte-identical document (`doc.contentHash === draft.baseContentHash`):
- *    - Exact `targetHeaderLine` uniquely identifies any topic (even identical empty siblings).
+ *    - Exact `targetHeaderLine` uniquely identifies any topic (even identical empty siblings
+ *      and legacy PR #6 drafts).
  *    - Legacy drafts without `targetHeaderLine` match iff the title is unique.
  * 2. Modified document (`doc.contentHash !== draft.baseContentHash`):
- *    - Requires FULL structural proof: exact `targetAncestorPath` AND exact `targetOwnRangeHash`
- *      matching a single topic, AND no pre-existing indistinguishable clone under the same parent
- *      (`targetHadIdenticalSibling !== true`).
- *    - Otherwise fails closed as `'ambiguous'` so a renamed/deleted sibling's draft (or a draft
- *      on an externally edited topic) is NEVER auto-filled into the wrong topic or over edits;
- *      the user explicitly confirms via the "Restore here" banner instead.
+ *    - Requires FULL structural proof (`hasFullCrossEditStructuralProof`): exact
+ *      `targetAncestorPath` AND exact `targetOwnRangeHash` matching a single topic, AND
+ *      explicitly proven `targetHadIdenticalSibling === false` (legacy drafts missing this field
+ *      are treated as unknown and fail closed).
+ *    - Otherwise fails closed as `'ambiguous'` so a renamed/deleted sibling's draft, a legacy
+ *      draft on a modified document, or a draft on an externally edited topic is NEVER auto-filled
+ *      into the wrong topic or over edits; the user explicitly confirms via "Restore here".
  */
 export function resolveDraftTarget(doc: MindMapDocument, draft: DraftEntry): DraftResolution {
   const candidates = [...doc.nodes.values()].filter(
@@ -153,12 +170,8 @@ export function resolveDraftTarget(doc: MindMapDocument, draft: DraftEntry): Dra
     };
   }
 
-  // 2. Document changed since draft save: require full structural proof
-  if (
-    draft.targetAncestorPath === undefined ||
-    draft.targetOwnRangeHash === undefined ||
-    draft.targetHadIdenticalSibling === true
-  ) {
+  // 2. Document changed since draft save: require full structural proof (fails closed on legacy drafts)
+  if (!hasFullCrossEditStructuralProof(draft)) {
     const hintCandidates =
       draft.targetAncestorPath !== undefined
         ? candidates.filter((n) =>
@@ -262,6 +275,7 @@ export class DraftStore {
     targetAncestorPath?: readonly string[],
     targetOwnRangeHash?: string,
     baseContentHash?: string,
+    targetHadIdenticalSibling?: boolean,
   ): DraftEntry | undefined {
     return this.drafts.find((entry) =>
       isSameDraftTarget(entry, {
@@ -271,6 +285,7 @@ export class DraftStore {
         targetHeaderLine,
         targetOwnRangeHash,
         targetAncestorPath,
+        targetHadIdenticalSibling,
         baseContentHash,
       }),
     );
@@ -290,6 +305,7 @@ export class DraftStore {
         targetHeaderLine: input.targetHeaderLine,
         targetOwnRangeHash: input.targetOwnRangeHash,
         targetAncestorPath: input.targetAncestorPath,
+        targetHadIdenticalSibling: input.targetHadIdenticalSibling,
         baseContentHash: input.baseContentHash,
       }),
     );
@@ -353,6 +369,7 @@ export class DraftStore {
     targetAncestorPath?: readonly string[],
     targetOwnRangeHash?: string,
     baseContentHash?: string,
+    targetHadIdenticalSibling?: boolean,
   ): Promise<void> {
     const existing = this.findDraft(
       filePath,
@@ -362,6 +379,7 @@ export class DraftStore {
       targetAncestorPath,
       targetOwnRangeHash,
       baseContentHash,
+      targetHadIdenticalSibling,
     );
     if (!existing) return;
     await this.deleteDraft(existing.draftId);

@@ -93,6 +93,7 @@ export interface MindMapAppProps {
     targetAncestorPath?: readonly string[],
     targetOwnRangeHash?: string,
     baseContentHash?: string,
+    targetHadIdenticalSibling?: boolean,
   ) => Promise<void>;
   readonly onCopyBranchSubtree?: (node: TopicNode) => Promise<boolean>;
   readonly onReadBranchClipboard?: () => Promise<string | null>;
@@ -589,6 +590,7 @@ export function MindMapApp({
             targetAncestorPath,
             guard.expectedOwnRangeHash,
             guard.expectedContentHash,
+            targetHadIdenticalSibling,
           );
           if (restoredDraftId !== undefined) {
             void onDeleteDraft?.(restoredDraftId);
@@ -666,6 +668,7 @@ export function MindMapApp({
           targetAncestorPath,
           guard.expectedOwnRangeHash,
           guard.expectedContentHash,
+          targetHadIdenticalSibling,
         );
         if (restoredDraftId !== undefined) {
           void onDeleteDraft?.(restoredDraftId);
@@ -891,6 +894,7 @@ export function MindMapApp({
             targetAncestorPath,
             guard.expectedOwnRangeHash,
             guard.expectedContentHash,
+            targetHadIdenticalSibling,
           );
           if (restoredDraftId !== undefined) {
             void onDeleteDraft?.(restoredDraftId);
