@@ -187,4 +187,26 @@ describe('parseMarkdownToMap', () => {
     expect(result.document.lineEnding).toBe('\r\n');
     expect(result.document.readOnlyReasons).toEqual([]);
   });
+  it('nests list items only at the parent content column, as CommonMark does', () => {
+    const result = parseMarkdownToMap(
+      '# R\n1. a\n  1. b\n1. c\n   1. d\n- e\n - f\n- g\n  - h\n',
+      'F',
+    );
+    if (result.status !== 'ok') throw new Error('expected ok');
+    const doc = result.document;
+    const parentOf = (title: string): string | undefined => {
+      const node = [...doc.nodes.values()].find((n) => n.titleRaw === title);
+      return node?.parentId ? doc.nodes.get(node.parentId)?.titleRaw : undefined;
+    };
+    // "  1. b" does not reach the 3-column content of "1. a", so it is a sibling.
+    expect(parentOf('a')).toBe('R');
+    expect(parentOf('b')).toBe('R');
+    expect(parentOf('c')).toBe('R');
+    expect(parentOf('d')).toBe('c');
+    // " - f" does not reach the 2-column content of "- e", so it is a sibling.
+    expect(parentOf('e')).toBe('R');
+    expect(parentOf('f')).toBe('R');
+    expect(parentOf('g')).toBe('R');
+    expect(parentOf('h')).toBe('g');
+  });
 });

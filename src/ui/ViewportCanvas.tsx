@@ -17,6 +17,7 @@ import type {
   TopicLink,
 } from '../core/model';
 import { DomNodeLayer } from './DomNodeLayer';
+import type { EditingSession } from './editSession';
 import { SvgEdgeLayer } from './SvgEdgeLayer';
 
 export interface ViewportSize {
@@ -29,6 +30,9 @@ export interface ViewportCanvasProps {
   readonly layout: LayoutResult;
   readonly camera: CameraState;
   readonly selectedId: string | null;
+  readonly editingSession: EditingSession | null;
+  readonly imeGuardWindowMs: number;
+  readonly inlineEditorLabel: string;
   readonly dimmedNodeIds: ReadonlySet<string>;
   readonly matchedNodeIds: ReadonlySet<string>;
   readonly effectiveCollapsedIds: ReadonlySet<string>;
@@ -40,6 +44,10 @@ export interface ViewportCanvasProps {
   readonly onToggleCollapse: (nodeId: string) => void;
   readonly onOpenPopover: (nodeId: string) => void;
   readonly onOpenLink: (link: TopicLink, newTab: boolean) => void;
+  readonly onStartEdit: (nodeId: string) => void;
+  readonly onCommitEdit: (session: EditingSession, nextTitle: string) => void;
+  readonly onCancelEdit: () => void;
+  readonly onDiscardEdit: (unsavedValue: string) => void;
 }
 
 const MIN_ZOOM = 0.2;
@@ -54,6 +62,9 @@ export function ViewportCanvas({
   layout,
   camera,
   selectedId,
+  editingSession,
+  imeGuardWindowMs,
+  inlineEditorLabel,
   dimmedNodeIds,
   matchedNodeIds,
   effectiveCollapsedIds,
@@ -65,6 +76,10 @@ export function ViewportCanvas({
   onToggleCollapse,
   onOpenPopover,
   onOpenLink,
+  onStartEdit,
+  onCommitEdit,
+  onCancelEdit,
+  onDiscardEdit,
 }: ViewportCanvasProps) {
   const containerRef = useRef<HTMLDivElement | null>(null);
   const [viewportSize, setViewportSize] = useState<ViewportSize>({ width: 960, height: 640 });
@@ -201,6 +216,9 @@ export function ViewportCanvas({
           document={document}
           visibleLayoutNodes={culled.nodes}
           selectedId={selectedId}
+          editingSession={editingSession}
+          imeGuardWindowMs={imeGuardWindowMs}
+          inlineEditorLabel={inlineEditorLabel}
           dimmedNodeIds={dimmedNodeIds}
           matchedNodeIds={matchedNodeIds}
           effectiveCollapsedIds={effectiveCollapsedIds}
@@ -210,6 +228,10 @@ export function ViewportCanvas({
           onToggleCollapse={onToggleCollapse}
           onOpenPopover={onOpenPopover}
           onOpenLink={onOpenLink}
+          onStartEdit={onStartEdit}
+          onCommitEdit={onCommitEdit}
+          onCancelEdit={onCancelEdit}
+          onDiscardEdit={onDiscardEdit}
         />
       </div>
     </div>
