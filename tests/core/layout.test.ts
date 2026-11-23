@@ -1,8 +1,14 @@
 import { describe, expect, it } from 'vitest';
 import { assignMainBranchSides } from '../../src/core/layout/balance';
-import { resolveLevelStyle } from '../../src/core/layout/theme';
+import {
+  getBranchColor,
+  getThemePalette,
+  resolveLevelStyle,
+  resolveNodeVisualColors,
+} from '../../src/core/layout/theme';
 import { computeLayout, cullLayoutToViewport } from '../../src/core/layout/treeLayout';
 import { parseMarkdownToMap } from '../../src/core/parser';
+import { resolveArrowNavigation } from '../../src/core/view/navigation';
 
 describe('layout engine', () => {
   it('assigns main branches deterministically (1-2 right, 3+ split right/left)', () => {
@@ -97,5 +103,120 @@ describe('layout engine', () => {
     );
     expect(culled.nodes.length).toBeGreaterThan(0);
     expect(culled.nodes.length).toBeLessThan(layout.nodes.size);
+  });
+
+  it('generates tapered fill ribbons for Level 1 edges and attaches depth-3+ edges to the underline baseline', () => {
+    const md = ['# Central', '## Branch', '- Child', '  - Grandchild'].join('\n');
+    const parsed = parseMarkdownToMap(md, 'Test');
+    expect(parsed.status).toBe('ok');
+    if (parsed.status !== 'ok') return;
+
+    const allIds = new Set(parsed.document.nodes.keys());
+    const tapered = computeLayout(parsed.document, allIds, undefined, undefined, {
+      layoutMode: 'balanced',
+      edgeStyle: 'tapered',
+    });
+
+    const branchNode = [...parsed.document.nodes.values()].find((n) => n.titleRaw === 'Branch');
+    const grandchildNode = [...parsed.document.nodes.values()].find((n) => n.titleRaw === 'Grandchild');
+    expect(branchNode).toBeDefined();
+    expect(grandchildNode).toBeDefined();
+    if (!branchNode || !grandchildNode) return;
+
+    const l1Edge = tapered.edges.find((e) => e.toId === branchNode.id);
+    expect(l1Edge?.renderMode).toBe('fill');
+    expect(l1Edge?.pathD.endsWith('Z')).toBe(true);
+
+    const l3Edge = tapered.edges.find((e) => e.toId === grandchildNode.id);
+    const l3Layout = tapered.nodes.get(grandchildNode.id);
+    expect(l3Edge?.renderMode).toBe('stroke');
+    expect(l3Layout).toBeDefined();
+    if (l3Edge && l3Layout) {
+      const expectedBottomY = (l3Layout.y + l3Layout.height).toFixed(1);
+      expect(l3Edge.pathD.endsWith(` ${expectedBottomY}`)).toBe(true);
+    }
+
+    // Curved and orthogonal edge styles render as strokes
+    const curved = computeLayout(parsed.document, allIds, undefined, undefined, {
+      layoutMode: 'balanced',
+      edgeStyle: 'curved',
+    });
+    expect(curved.edges.every((e) => e.renderMode === 'stroke')).toBe(true);
+
+    const ortho = computeLayout(parsed.document, allIds, undefined, undefined, {
+      layoutMode: 'balanced',
+      edgeStyle: 'orthogonal',
+    });
+    expect(ortho.edges.every((e) => e.renderMode === 'stroke' && e.pathD.includes(' L '))).toBe(
+      true,
+    );
+  });
+
+  it('supports right-only and non-overlapping org-chart layouts with org-chart arrow navigation', () => {
+    const md = [
+      '# Root',
+      '## Branch 1',
+      '- B1a',
+      '  - B1a-i',
+      '- B1b',
+      '## Branch 2',
+      '- B2a',
+      '## Branch 3',
+      '- B3a',
+    ].join('\n');
+    const parsed = parseMarkdownToMap(md, 'Test');
+    expect(parsed.status).toBe('ok');
+    if (parsed.status !== 'ok') return;
+    const doc = parsed.document;
+    const allIds = new Set(doc.nodes.keys());
+
+    // Right-only layout puts every non-root node on the right side
+    const rightLayout = computeLayout(doc, allIds, undefined, undefined, { layoutMode: 'right' });
+    for (const ln of rightLayout.nodes.values()) {
+      if (ln.id !== doc.rootId) expect(ln.side).toBe('right');
+    }
+
+    // Org-chart layout puts every non-root node on 'down' with zero overlaps
+    const orgLayout = computeLayout(doc, allIds, undefined, undefined, {
+      layoutMode: 'org-chart',
+      edgeStyle: 'orthogonal',
+    });
+    const placed = [...orgLayout.nodes.values()];
+    for (let i = 0; i < placed.length; i += 1) {
+      const a = placed[i];
+      if (!a) continue;
+      for (let j = i + 1; j < placed.length; j += 1) {
+        const b = placed[j];
+        if (!b) continue;
+        const overlapsX = a.x < b.x + b.width && a.x + a.width > b.x;
+        const overlapsY = a.y < b.y + b.height && a.y + a.height > b.y;
+        expect(overlapsX && overlapsY).toBe(false);
+      }
+    }
+
+    // Arrow navigation in org-chart: Root -> ArrowDown -> Branch 1 -> ArrowRight -> Branch 2
+    const b1 = [...doc.nodes.values()].find((n) => n.titleRaw === 'Branch 1');
+    const b2 = [...doc.nodes.values()].find((n) => n.titleRaw === 'Branch 2');
+    const b1a = [...doc.nodes.values()].find((n) => n.titleRaw === 'B1a');
+    expect(resolveArrowNavigation(doc, orgLayout, doc.rootId, 'down')).toBe(b1?.id);
+    expect(resolveArrowNavigation(doc, orgLayout, b1?.id ?? null, 'right')).toBe(b2?.id);
+    expect(resolveArrowNavigation(doc, orgLayout, b1?.id ?? null, 'down')).toBe(b1a?.id);
+    expect(resolveArrowNavigation(doc, orgLayout, b1a?.id ?? null, 'left')).toBe(b1?.id);
+  });
+
+  it('resolves pastel-fill, wireframe, and monochrome colors across Light and Dark Solarized palettes', () => {
+    const light = getThemePalette('light');
+    const dark = getThemePalette('dark-solarized');
+
+    const pastelColor = getBranchColor(light, 0, true, 'pastel-fill');
+    const pastelNode = resolveNodeVisualColors(light, pastelColor, 'rounded-rect', 'pastel-fill', false);
+    expect(pastelNode.backgroundColor.startsWith('rgba(')).toBe(true);
+    expect(pastelNode.borderColor).toBe(pastelColor);
+
+    const wireNode = resolveNodeVisualColors(light, pastelColor, 'rounded-rect', 'wireframe', false);
+    expect(wireNode.backgroundColor).toBe(light.nodeBg);
+
+    const monoBranch = getBranchColor(dark, 2, true, 'monochrome');
+    expect(monoBranch).toBe(dark.monochromeAccent);
   });
 });

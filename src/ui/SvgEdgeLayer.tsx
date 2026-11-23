@@ -1,4 +1,4 @@
-import type { LayoutEdge, LayoutNode } from '../core/model';
+import type { ColorStyleMode, LayoutEdge, LayoutNode } from '../core/model';
 import {
   getBranchColor,
   resolveLevelStyle,
@@ -11,6 +11,7 @@ export interface SvgEdgeLayerProps {
   readonly dimmedNodeIds: ReadonlySet<string>;
   readonly palette: MapThemePalette;
   readonly rainbowBranches: boolean;
+  readonly colorStyle: ColorStyleMode;
 }
 
 export function SvgEdgeLayer({
@@ -19,6 +20,7 @@ export function SvgEdgeLayer({
   dimmedNodeIds,
   palette,
   rainbowBranches,
+  colorStyle,
 }: SvgEdgeLayerProps) {
   return (
     <svg
@@ -30,18 +32,31 @@ export function SvgEdgeLayer({
       {edges.map((edge) => {
         const targetLayout = allLayoutNodes.get(edge.toId);
         const levelStyle = resolveLevelStyle(targetLayout?.depth ?? 1);
-        const strokeColor = getBranchColor(palette, edge.colorIndex, rainbowBranches);
+        const branchColor = getBranchColor(palette, edge.colorIndex, rainbowBranches, colorStyle);
         const isDimmed = dimmedNodeIds.has(edge.toId);
+
+        if (edge.renderMode === 'fill') {
+          return (
+            <path
+              key={`${edge.fromId}->${edge.toId}`}
+              d={edge.pathD}
+              fill={branchColor}
+              stroke="none"
+              opacity={isDimmed ? 0.18 : 0.88}
+            />
+          );
+        }
 
         return (
           <path
             key={`${edge.fromId}->${edge.toId}`}
             d={edge.pathD}
             fill="none"
-            stroke={strokeColor}
+            stroke={branchColor}
             strokeWidth={levelStyle.edgeWidthPx}
             strokeLinecap="round"
-            opacity={isDimmed ? 0.2 : 0.85}
+            strokeLinejoin="round"
+            opacity={isDimmed ? 0.18 : 0.85}
           />
         );
       })}

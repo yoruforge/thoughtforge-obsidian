@@ -180,6 +180,10 @@ export class MindMapView extends FileView {
       if (!this.canHandleScopeShortcut(evt)) return undefined;
       return this.actionTriggers?.editSelected() ? false : undefined;
     });
+    this.scope.register(['Mod', 'Shift'], '0', (evt) => {
+      if (evt.altKey || !this.canHandleScopeShortcut(evt)) return undefined;
+      return this.actionTriggers?.fitSelection() ? false : undefined;
+    });
   }
 
   private canHandleScopeShortcut(evt: KeyboardEvent): boolean {
@@ -389,14 +393,16 @@ export class MindMapView extends FileView {
         filePath: this.file?.path ?? '',
         parseResult: this.parseResult,
         themeMode: this.resolveThemeMode(),
-        rainbowBranches: this.plugin.mindMapSettings.rainbowBranches,
-        imeGuardWindowMs: this.plugin.mindMapSettings.imeGuardWindowMs,
+        settings: this.plugin.mindMapSettings,
         messages: this.plugin.messages,
         onOpenMarkdown: (line?: number) => {
           void this.openMarkdownAtLine(line);
         },
         onOpenLink: (link: TopicLink, newTab: boolean) => {
           void this.handleOpenLink(link, newTab);
+        },
+        onUpdateSettings: (patch) => {
+          void this.plugin.updateSettings(patch);
         },
         onDispatchCommand: (command: SemanticCommand) => this.dispatchCommand(command),
         onUndo: () => this.dispatchHistory('undo'),

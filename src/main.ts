@@ -69,6 +69,36 @@ function parseStoredPluginData(raw: unknown): {
       rawSettings.defaultOpenMode === 'new-tab' || rawSettings.defaultOpenMode === 'split'
         ? rawSettings.defaultOpenMode
         : DEFAULT_PLUGIN_SETTINGS.defaultOpenMode,
+    layoutMode:
+      rawSettings.layoutMode === 'balanced' ||
+      rawSettings.layoutMode === 'right' ||
+      rawSettings.layoutMode === 'org-chart'
+        ? rawSettings.layoutMode
+        : DEFAULT_PLUGIN_SETTINGS.layoutMode,
+    colorStyle:
+      rawSettings.colorStyle === 'pastel-fill' ||
+      rawSettings.colorStyle === 'wireframe' ||
+      rawSettings.colorStyle === 'monochrome'
+        ? rawSettings.colorStyle
+        : DEFAULT_PLUGIN_SETTINGS.colorStyle,
+    edgeStyle:
+      rawSettings.edgeStyle === 'tapered' ||
+      rawSettings.edgeStyle === 'curved' ||
+      rawSettings.edgeStyle === 'orthogonal'
+        ? rawSettings.edgeStyle
+        : DEFAULT_PLUGIN_SETTINGS.edgeStyle,
+    canvasPattern:
+      rawSettings.canvasPattern === 'none' ||
+      rawSettings.canvasPattern === 'dots' ||
+      rawSettings.canvasPattern === 'grid'
+        ? rawSettings.canvasPattern
+        : DEFAULT_PLUGIN_SETTINGS.canvasPattern,
+    topicNumbering:
+      rawSettings.topicNumbering === 'off' ||
+      rawSettings.topicNumbering === 'decimal' ||
+      rawSettings.topicNumbering === 'alpha'
+        ? rawSettings.topicNumbering
+        : DEFAULT_PLUGIN_SETTINGS.topicNumbering,
   };
 
   const rawDrafts = obj['drafts'];

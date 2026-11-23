@@ -3,7 +3,8 @@ import type { LayoutResult, MindMapDocument } from '../model';
 export type ArrowDirection = 'up' | 'down' | 'left' | 'right';
 
 /**
- * Resolves spatial arrow navigation across center/left/right branches.
+ * Resolves spatial arrow navigation across center/left/right radial branches
+ * as well as top-down org-chart ('down') trees.
  */
 export function resolveArrowNavigation(
   doc: MindMapDocument,
@@ -23,11 +24,46 @@ export function resolveArrowNavigation(
 
   // Center node navigation
   if (currentLayout.side === 'center') {
+    if (direction === 'down') {
+      return visibleChildren.find((id) => layout.nodes.get(id)?.side === 'down') ?? currentId;
+    }
     if (direction === 'right') {
       return visibleChildren.find((id) => layout.nodes.get(id)?.side === 'right') ?? currentId;
     }
     if (direction === 'left') {
       return visibleChildren.find((id) => layout.nodes.get(id)?.side === 'left') ?? currentId;
+    }
+    return currentId;
+  }
+
+  // Top-down Org-Chart navigation
+  if (currentLayout.side === 'down') {
+    const parent = currentNode.parentId !== null ? doc.nodes.get(currentNode.parentId) : undefined;
+    if (currentLayout.depth === 1) {
+      if (direction === 'up') return currentNode.parentId ?? currentId;
+      if (direction === 'down') return visibleChildren[0] ?? currentId;
+      if (parent) {
+        const siblings = parent.childIds.filter((id) => layout.nodes.has(id));
+        const idx = siblings.indexOf(currentId);
+        if (direction === 'left' && idx > 0) return siblings[idx - 1] ?? currentId;
+        if (direction === 'right' && idx >= 0 && idx < siblings.length - 1) {
+          return siblings[idx + 1] ?? currentId;
+        }
+      }
+      return currentId;
+    }
+    // Depth 2+ stacked vertically inside org-chart column
+    if (direction === 'left') return currentNode.parentId ?? currentId;
+    if (direction === 'right') return visibleChildren[0] ?? currentId;
+    if (parent) {
+      const siblings = parent.childIds.filter((id) => layout.nodes.has(id));
+      const idx = siblings.indexOf(currentId);
+      if (direction === 'up') {
+        return idx > 0 ? (siblings[idx - 1] ?? currentId) : (currentNode.parentId ?? currentId);
+      }
+      if (direction === 'down' && idx >= 0 && idx < siblings.length - 1) {
+        return siblings[idx + 1] ?? currentId;
+      }
     }
     return currentId;
   }
@@ -59,7 +95,6 @@ export function resolveArrowNavigation(
     }
   }
 
-  // Cross-branch fallback at the same side and depth sorted by Y
   const sameDepthCandidates = [...layout.nodes.values()]
     .filter((ln) => ln.side === currentLayout.side && ln.depth === currentLayout.depth)
     .sort((a, b) => a.y - b.y);

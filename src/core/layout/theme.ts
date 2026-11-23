@@ -1,3 +1,5 @@
+import type { ColorStyleMode } from '../model';
+
 export type ResolvedThemeMode = 'light' | 'dark-solarized';
 
 export type NodeShape = 'rounded-pill' | 'rounded-rect' | 'underline';
@@ -34,7 +36,15 @@ export interface MapThemePalette {
   readonly centralText: string;
   readonly nodeBg: string;
   readonly defaultBranchColor: string;
+  readonly monochromeAccent: string;
   readonly rainbowColors: readonly string[];
+}
+
+export interface NodeVisualColors {
+  readonly backgroundColor: string;
+  readonly borderColor: string;
+  readonly textColor: string;
+  readonly accentColor: string;
 }
 
 export const LIGHT_CLASSIC_PALETTE: MapThemePalette = {
@@ -47,6 +57,7 @@ export const LIGHT_CLASSIC_PALETTE: MapThemePalette = {
   centralText: '#ffffff',
   nodeBg: '#ffffff',
   defaultBranchColor: '#3b82f6',
+  monochromeAccent: '#475569',
   rainbowColors: [
     '#2563eb', // blue
     '#059669', // emerald
@@ -69,6 +80,7 @@ export const DARK_SOLARIZED_PALETTE: MapThemePalette = {
   centralText: '#fdf6e3',
   nodeBg: '#073642',
   defaultBranchColor: '#268bd2',
+  monochromeAccent: '#839496',
   rainbowColors: [
     '#268bd2', // blue
     '#859900', // green
@@ -175,7 +187,11 @@ export function getBranchColor(
   palette: MapThemePalette,
   branchColorIndex: number,
   rainbowBranches: boolean,
+  colorStyle: ColorStyleMode = 'pastel-fill',
 ): string {
+  if (colorStyle === 'monochrome') {
+    return palette.monochromeAccent;
+  }
   if (!rainbowBranches) {
     return palette.defaultBranchColor;
   }
@@ -183,4 +199,78 @@ export function getBranchColor(
   if (len === 0) return palette.defaultBranchColor;
   const idx = ((branchColorIndex % len) + len) % len;
   return palette.rainbowColors[idx] ?? palette.defaultBranchColor;
+}
+
+export function hexToRgba(hex: string, alpha: number): string {
+  const normalized = hex.trim().replace(/^#/, '');
+  if (!/^[0-9a-fA-F]{6}$/.test(normalized)) {
+    return hex;
+  }
+  const r = Number.parseInt(normalized.slice(0, 2), 16);
+  const g = Number.parseInt(normalized.slice(2, 4), 16);
+  const b = Number.parseInt(normalized.slice(4, 6), 16);
+  return `rgba(${r}, ${g}, ${b}, ${alpha})`;
+}
+
+/**
+ * Resolves surface, border, and text colors for a topic node according to
+ * depth shape, theme mode, and active colorStyle ('pastel-fill' | 'wireframe' | 'monochrome').
+ */
+export function resolveNodeVisualColors(
+  palette: MapThemePalette,
+  branchColor: string,
+  shape: NodeShape,
+  colorStyle: ColorStyleMode,
+  isCenter: boolean,
+): NodeVisualColors {
+  if (isCenter) {
+    if (colorStyle === 'monochrome') {
+      return {
+        backgroundColor: palette.mode === 'dark-solarized' ? '#073642' : '#334155',
+        borderColor: palette.monochromeAccent,
+        textColor: palette.centralText,
+        accentColor: palette.monochromeAccent,
+      };
+    }
+    return {
+      backgroundColor: palette.centralBg,
+      borderColor: palette.centralBorder,
+      textColor: palette.centralText,
+      accentColor: palette.centralBorder,
+    };
+  }
+
+  if (shape === 'underline') {
+    return {
+      backgroundColor: 'transparent',
+      borderColor: branchColor,
+      textColor: palette.textPrimary,
+      accentColor: branchColor,
+    };
+  }
+
+  if (colorStyle === 'wireframe') {
+    return {
+      backgroundColor: palette.nodeBg,
+      borderColor: branchColor,
+      textColor: palette.textPrimary,
+      accentColor: branchColor,
+    };
+  }
+
+  const tintAlpha =
+    colorStyle === 'monochrome'
+      ? palette.mode === 'dark-solarized'
+        ? 0.16
+        : 0.08
+      : palette.mode === 'dark-solarized'
+        ? 0.2
+        : 0.11;
+
+  return {
+    backgroundColor: hexToRgba(branchColor, tintAlpha),
+    borderColor: branchColor,
+    textColor: palette.textPrimary,
+    accentColor: branchColor,
+  };
 }

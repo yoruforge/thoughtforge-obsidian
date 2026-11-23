@@ -1,10 +1,17 @@
-import type { FocusMode, MindMapDocument } from '../model';
+import type {
+  FocusMode,
+  MindMapDocument,
+  StructuredFilterCriteria,
+  TopicNode,
+} from '../model';
+import { extractTopicTags } from './topicPresentation';
 
 export interface VisibilityOptions {
   readonly baseCollapsedIds: ReadonlySet<string>;
   readonly focusMode: FocusMode;
   readonly selectedId: string | null;
   readonly filterQuery: string;
+  readonly structuredFilter?: StructuredFilterCriteria;
   readonly userOpenedDuringFilterIds: ReadonlySet<string>;
 }
 
@@ -14,6 +21,48 @@ export interface VisibilityResult {
   readonly matchedNodeIds: ReadonlySet<string>;
   readonly effectiveCollapsedIds: ReadonlySet<string>;
   readonly filterActive: boolean;
+}
+
+const OPEN_TASK_RE = /^\[ \][ \t]+$/;
+const COMPLETED_TASK_RE = /^\[[xX]\][ \t]+$/;
+
+export function hasActiveStructuredFilter(
+  criteria: StructuredFilterCriteria | undefined,
+): boolean {
+  if (!criteria) return false;
+  return (
+    criteria.hasNote === true ||
+    criteria.hasOpenTask === true ||
+    criteria.hasCompletedTask === true ||
+    criteria.hasLink === true ||
+    criteria.hasUnmapped === true ||
+    (criteria.tag !== undefined && criteria.tag.trim().length > 0)
+  );
+}
+
+function matchesStructuredFilter(
+  node: TopicNode,
+  criteria: StructuredFilterCriteria | undefined,
+): boolean {
+  if (!criteria) return true;
+  if (criteria.hasNote === true && node.noteRange === null) return false;
+  if (criteria.hasOpenTask === true && !OPEN_TASK_RE.test(node.preservedPrefix)) return false;
+  if (criteria.hasCompletedTask === true && !COMPLETED_TASK_RE.test(node.preservedPrefix)) {
+    return false;
+  }
+  if (criteria.hasLink === true && node.links.length === 0) return false;
+  if (criteria.hasUnmapped === true && node.unmappedBlocks.length === 0) return false;
+
+  const rawTag = criteria.tag?.trim();
+  if (rawTag && rawTag.length > 0) {
+    const normalizedFilterTag = (rawTag.startsWith('#') ? rawTag : `#${rawTag}`).toLowerCase();
+    const nodeTags = extractTopicTags(node.titleRaw).map((t) => t.toLowerCase());
+    const tagHit = nodeTags.some(
+      (t) => t === normalizedFilterTag || t.startsWith(`${normalizedFilterTag}/`),
+    );
+    if (!tagHit) return false;
+  }
+  return true;
 }
 
 function collectSubtreeIds(doc: MindMapDocument, startId: string, out: Set<string>): void {
@@ -75,21 +124,17 @@ export function computeDepthCollapsedIds(
 }
 
 /**
- * Evaluates effective visibility, collapse state, and dimming for Focus + Quick Filter.
- *
- * Rules:
- * - Basic collapse state is preserved separately from temporary Quick Filter expansion.
- * - Quick Filter matches expand ancestors temporarily and temporarily collapse unrelated branches
- *   when at least one match exists (unless manually opened during the same filter session).
- * - Focus dims non-focused branches (fixed anchor or following current selection).
- * - When both Focus and Quick Filter are active, only nodes satisfying both remain full opacity.
+ * Evaluates effective visibility, collapse state, and dimming for Focus + Quick Filter
+ * + Markdown-derived Structured Filters.
  */
 export function computeVisibilityAndEmphasis(
   doc: MindMapDocument,
   options: VisibilityOptions,
 ): VisibilityResult {
   const trimmedQuery = options.filterQuery.trim().toLowerCase();
-  const filterActive = trimmedQuery.length > 0;
+  const textFilterActive = trimmedQuery.length > 0;
+  const structuredActive = hasActiveStructuredFilter(options.structuredFilter);
+  const filterActive = textFilterActive || structuredActive;
 
   const matchedNodeIds = new Set<string>();
   const filterAncestors = new Set<string>();
@@ -97,12 +142,15 @@ export function computeVisibilityAndEmphasis(
 
   if (filterActive) {
     for (const node of doc.nodes.values()) {
-      const titleHit =
+      const textHit =
+        !textFilterActive ||
         node.displayTitle.toLowerCase().includes(trimmedQuery) ||
-        node.titleRaw.toLowerCase().includes(trimmedQuery);
-      const noteHit =
-        node.noteText !== null && node.noteText.toLowerCase().includes(trimmedQuery);
-      if (titleHit || noteHit) {
+        node.titleRaw.toLowerCase().includes(trimmedQuery) ||
+        (node.noteText !== null && node.noteText.toLowerCase().includes(trimmedQuery));
+
+      const attrHit = !structuredActive || matchesStructuredFilter(node, options.structuredFilter);
+
+      if (textHit && attrHit) {
         matchedNodeIds.add(node.id);
         collectAncestorIds(doc, node.id, filterAncestors);
         collectSubtreeIds(doc, node.id, filterMatchSubtrees);
@@ -123,13 +171,11 @@ export function computeVisibilityAndEmphasis(
     let isCollapsed = options.baseCollapsedIds.has(nodeId);
     if (filterActive && matchedNodeIds.size > 0) {
       if (filterAncestors.has(nodeId)) {
-        // Temporarily expand ancestors of any match (takes precedence over base collapse / depth)
         isCollapsed = false;
       } else if (
         !filterMatchSubtrees.has(nodeId) &&
         !options.userOpenedDuringFilterIds.has(nodeId)
       ) {
-        // Temporarily collapse non-matching branches outside match subtrees
         isCollapsed = true;
       }
     }
@@ -146,7 +192,6 @@ export function computeVisibilityAndEmphasis(
 
   traverse(doc.rootId);
 
-  // Determine focus highlight set
   let focusAnchorId: string | null = null;
   if (options.focusMode.kind === 'fixed') {
     focusAnchorId = doc.nodes.has(options.focusMode.anchorId)
