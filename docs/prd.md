@@ -1,4 +1,4 @@
-# ThoughtForge（`thoughtforge-obsidian`）企画書・要件定義書（PRD v0.4）
+# ThoughtForge（`thoughtforge-obsidian`）企画書・要件定義書（PRD v0.5）
 
 > [!NOTE]
 > 本ドキュメントは新規独立 Obsidian プラグイン **ThoughtForge**（リポジトリ: `thoughtforge-obsidian`）の【フェーズ1: 計画】正本です。保存方式は **Markdown 正本（「ノートがそのまま地図」・最小差分・色や座標はノートに書かない）**、UI スタックは **HTML + SVG ハイブリッド ＋ React**、トピックノート本文は **地図ポップオーバーからも直接編集可能**、配布は **Obsidian Community Plugin 公開基準準拠** を前提とします。
@@ -73,7 +73,7 @@ frontmatter、フェンス／インデントコードブロック、表、引用
 - **M2-a**：最小編集スライス（最小差分パッチ `rename`/`insertChild`/`insertSibling`、Dry-Run 再解析、`vault.process` CAS 照合、未保存 Markdown 競合保護、日本語 IME ガード、`View.scope` `F2`）— **完了（PR #2）**
 - **M2-b**：構造編集・削除＆Undo/Redo（`Shift+Tab` 新親・`Delete` 枝削除・`Cmd+Backspace` 子昇格削除・`Cmd+Arrow` 並替/昇降・`Cmd+Enter` 分割・`Cmd+Z/Shift+Z` Undo/Redo・タスク `[ ]`↔`[x]` 切替）— **完了（PR #4）**
 - **M2-ui**：Visual Design & UI/UX Polish（iThoughts 動画 10 件分析の表現層・UI 踏襲：テーパード曲線、下線接続、カラーモード・レイアウト・グリッド、Quick Style Popover、ノートホバープレビュー、構造化フィルタ、SVG バッジ、選択自動追従、非破壊トピック番号付け）— **完了（PR #3・PR #5）**
-- **M2-c / M3**：下書き保護＋本文直接編集＆実用化（`DraftStore` による `field: 'title' | 'note'` 下書き退避・永続化成否通知・構造識別／旧版互換フェイルクローズ／手動復元、`NodePopover` トピックノート直接編集・`Cmd+Shift+T`、D&D 再配置・並替、枝コピペ、Phase 1 ハードニング＆隔離 Obsidian 1.15.1 自動受入検証）— **実装＆自動/隔離実機検証完了（PR #6〜#12；物理キーボードでの日本語 IME 実機確認のみ残受入）**
+- **M2-c / M3**：下書き保護＋本文直接編集＆実用化（`DraftStore` による `field: 'title' | 'note'` 下書き退避・FIFO 直列化永続化・単調リビジョン照合・構造識別／旧版互換フェイルクローズ／手動復元、`NodePopover` トピックノート直接編集・`Cmd+Shift+T`、D&D 再配置・並替、枝コピペ、Phase 1 ハードニング＆隔離 Obsidian 1.15.1 検証）— **完了（PR #6〜#14 で `main`（`24f998c`）へマージ済み。`pnpm verify` 14 ファイル / 87 テスト通過、隔離 Obsidian 1.15.1 自動受入・回帰 27/27 通過（Antigravity 実施）、物理キーボードでの日本語 IME 実機確認 5/5 正常（ユーザー確認・非マップ要素バイト単位保全確認済み）。公開前残確認: Windows / Linux 実機およびスクリーンリーダー）**
 - **M4**：Obsidian 強化（Vault 連携・非破壊サイドカー視覚拡張検討）— **未着手**
 - **M5**：拡張（簡易プレゼンテーション・エクスポート・`.itmz` インポート等）— **未着手**
 
