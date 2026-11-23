@@ -30,6 +30,24 @@ describe('imageEmbeds (M4-b safe embed extraction & layout reservation)', () => 
     ]);
   });
 
+  it('supports CommonMark balanced parentheses, angle-bracket destinations, and multi-backtick code spans (Codex PR #17 P2)', () => {
+    const validTricky = [
+      'Paren ![diagram](pic(1).png)',
+      'Angle ![space diagram](<pic one.png>)',
+      'AngleParen ![both](<dir/pic (2).png> "title")',
+    ].join(' ');
+    expect(extractImageEmbeds(validTricky)).toEqual([
+      { target: 'pic(1).png', alt: 'diagram' },
+      { target: 'pic one.png', alt: 'space diagram' },
+      { target: 'dir/pic (2).png', alt: 'both' },
+    ]);
+
+    // Double-backtick code span containing a single backtick MUST NOT leak as a real image embed!
+    const multiBacktickCode =
+      'Example ``code ` with ![[pic.png]] and ![diagram](pic(1).png)`` and ```inner `` ![[pic.png]]```';
+    expect(extractImageEmbeds(multiBacktickCode)).toEqual([]);
+  });
+
   it('strictly blocks path traversal, percent-encoded traversal, absolute paths, external URLs, and non-image embeds', () => {
     expect(isSafeVaultImagePath('assets/ok.png')).toBe(true);
     expect(isSafeVaultImagePath('nested/img.svg')).toBe(true);

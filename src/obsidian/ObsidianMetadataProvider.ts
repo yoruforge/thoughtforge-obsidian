@@ -1,18 +1,30 @@
 import { TFile, type App } from 'obsidian';
+import type { MindMapDocument } from '../core/model';
 import {
-  doesLinkSubpathMatchAnchors,
+  doesLinkTargetTopicNode,
   formatSourceTitleFromPath,
   sortBacklinks,
 } from '../core/view/backlinks';
-import { isSafeVaultImagePath } from '../core/view/imageEmbeds';
+import {
+  defaultImageAltFromPath,
+  extractNodeImageEmbeds,
+  isNumericImageDimension,
+  isSafeVaultImagePath,
+} from '../core/view/imageEmbeds';
 import { splitLinkTargetSubpath } from '../core/view/topicResolver';
-import type { BacklinkItem, NodeMetadataProvider } from '../sync/ports';
+import type {
+  BacklinkItem,
+  BacklinkQueryTarget,
+  NodeMetadataProvider,
+  ResolvedNodeImage,
+} from '../sync/ports';
 
 /**
  * Obsidian metadataCache-backed implementation of `NodeMetadataProvider` (M4-b).
  * Strictly read-only, uses only public Obsidian APIs (`metadataCache.resolvedLinks`,
  * `metadataCache.getFileCache`, `metadataCache.getFirstLinkpathDest`, `vault.getResourcePath`),
- * and validates image paths against traversal and non-image extensions.
+ * aligns embed recognition with Obsidian's own parser (`cache.embeds` + source line ownership)
+ * when fresh, and validates all image paths against traversal and non-image extensions.
  */
 export class ObsidianMetadataProvider implements NodeMetadataProvider {
   private readonly updatingPaths = new Set<string>();
@@ -63,7 +75,7 @@ export class ObsidianMetadataProvider implements NodeMetadataProvider {
 
   getResolvedImageSrc(sourcePath: string, embedText: string): string | null {
     const cleanTarget = embedText.trim();
-    if (!isSafeVaultImagePath(cleanTarget)) {
+    if (cleanTarget.length === 0) {
       return null;
     }
     const { pathPart } = splitLinkTargetSubpath(cleanTarget);
@@ -77,21 +89,98 @@ export class ObsidianMetadataProvider implements NodeMetadataProvider {
     return this.app.vault.getResourcePath(dest);
   }
 
-  getBacklinks(
+  /**
+   * Resolves all safe vault image embeds per topic node in `doc`.
+   * When Obsidian's `metadataCache` is fresh for `filePath`, uses Obsidian's own parsed
+   * `cache.embeds` mapped by exact source line (`headerLine` / `noteRange`) so filename syntax
+   * (`pic(1).png`, `<pic one.png>`) and code-span skipping match Obsidian 100%.
+   * Falls back to the CommonMark-compliant pure scanner while cache is updating.
+   */
+  getResolvedNodeImages(
     filePath: string,
-    headingOrBlockId?: string | readonly string[],
-  ): readonly BacklinkItem[] {
+    doc: MindMapDocument,
+  ): ReadonlyMap<string, readonly ResolvedNodeImage[]> {
+    const result = new Map<string, ResolvedNodeImage[]>();
+    if (filePath.length === 0) return result;
+
+    const file = this.app.vault.getAbstractFileByPath(filePath);
+    const cache =
+      file instanceof TFile && !this.updatingPaths.has(filePath)
+        ? this.app.metadataCache.getFileCache(file)
+        : null;
+
+    if (cache !== null) {
+      const ownerByLine = new Map<number, string>();
+      for (const node of doc.nodes.values()) {
+        if (node.kind === 'central-virtual') continue;
+        ownerByLine.set(node.headerLine, node.id);
+        if (node.noteRange !== null) {
+          for (let line = node.noteRange.startLine; line < node.noteRange.endLine; line += 1) {
+            ownerByLine.set(line, node.id);
+          }
+        }
+      }
+
+      const seenPerNode = new Map<string, Set<string>>();
+      for (const embed of cache.embeds ?? []) {
+        const line = embed.position?.start?.line;
+        if (line === undefined) continue;
+        const nodeId = ownerByLine.get(line);
+        if (nodeId === undefined) continue;
+
+        const rawLink = embed.link?.trim() ?? '';
+        const resolvedSrc = this.getResolvedImageSrc(filePath, rawLink);
+        if (resolvedSrc === null) continue;
+
+        const { pathPart } = splitLinkTargetSubpath(rawLink);
+        const dedupeKey = pathPart.toLowerCase();
+        let seen = seenPerNode.get(nodeId);
+        if (!seen) {
+          seen = new Set<string>();
+          seenPerNode.set(nodeId, seen);
+        }
+        if (seen.has(dedupeKey)) continue;
+        seen.add(dedupeKey);
+
+        const rawDisplay = embed.displayText?.trim() ?? '';
+        const alt =
+          rawDisplay.length > 0 && !isNumericImageDimension(rawDisplay)
+            ? rawDisplay
+            : defaultImageAltFromPath(pathPart);
+
+        let list = result.get(nodeId);
+        if (!list) {
+          list = [];
+          result.set(nodeId, list);
+        }
+        list.push({ target: pathPart, src: resolvedSrc, alt });
+      }
+      return result;
+    }
+
+    // Fallback while metadataCache is updating (also CommonMark-compliant!)
+    for (const node of doc.nodes.values()) {
+      const embeds = extractNodeImageEmbeds(node);
+      if (embeds.length === 0) continue;
+      const list: ResolvedNodeImage[] = [];
+      for (const embed of embeds) {
+        const resolvedSrc = this.getResolvedImageSrc(filePath, embed.target);
+        if (resolvedSrc !== null) {
+          list.push({ target: embed.target, src: resolvedSrc, alt: embed.alt });
+        }
+      }
+      if (list.length > 0) {
+        result.set(node.id, list);
+      }
+    }
+    return result;
+  }
+
+  getBacklinks(filePath: string, target?: BacklinkQueryTarget): readonly BacklinkItem[] {
     const resolvedLinks = this.app.metadataCache.resolvedLinks;
     if (!resolvedLinks || filePath.length === 0) {
       return [];
     }
-
-    const anchors: readonly string[] =
-      headingOrBlockId === undefined
-        ? []
-        : typeof headingOrBlockId === 'string'
-          ? [headingOrBlockId]
-          : headingOrBlockId;
 
     const results: BacklinkItem[] = [];
 
@@ -105,7 +194,7 @@ export class ObsidianMetadataProvider implements NodeMetadataProvider {
       }
 
       let targetsSpecificAnchor = false;
-      if (anchors.length > 0) {
+      if (target !== undefined) {
         const cache = this.app.metadataCache.getFileCache(sourceFile);
         const refs = [...(cache?.links ?? []), ...(cache?.embeds ?? [])];
         for (const ref of refs) {
@@ -117,7 +206,7 @@ export class ObsidianMetadataProvider implements NodeMetadataProvider {
               ? sourceFile
               : this.app.metadataCache.getFirstLinkpathDest(pathPart, sourcePath);
           if (resolvedDest?.path !== filePath) continue;
-          if (doesLinkSubpathMatchAnchors(rawLink, anchors)) {
+          if (doesLinkTargetTopicNode(target.doc, rawLink, target.nodeId)) {
             targetsSpecificAnchor = true;
             break;
           }

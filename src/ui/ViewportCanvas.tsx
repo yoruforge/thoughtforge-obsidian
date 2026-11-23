@@ -57,7 +57,7 @@ export interface ViewportCanvasProps {
   readonly onSelectNode: (nodeId: string | null) => void;
   readonly onToggleCollapse: (nodeId: string) => void;
   readonly onOpenPopover: (nodeId: string) => void;
-  readonly onOpenLink: (link: TopicLink, newTab: boolean) => void;
+  readonly onOpenLink: (link: TopicLink, newTab: boolean, sourceNodeId?: string) => void;
   readonly onStartEdit: (nodeId: string) => void;
   readonly onCommitEdit: (session: EditingSession, nextTitle: string) => void;
   readonly onSplitEdit: (

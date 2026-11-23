@@ -13,7 +13,11 @@ import type { MindMapDocument, ParseResult, TopicLink, TopicNode } from '../core
 import { parseMarkdownToMap } from '../core/parser';
 import { extractSubtreeMarkdown } from '../core/patch';
 import type { SemanticCommand } from '../core/patch/commands';
-import { MapNavigationHistory, type MapHistoryEntry } from '../core/view/navigationHistory';
+import {
+  MapNavigationHistory,
+  type MapHistoryAnchor,
+  type MapHistoryEntry,
+} from '../core/view/navigationHistory';
 import { splitLinkTargetSubpath } from '../core/view/topicResolver';
 import type { Messages } from '../i18n';
 import type { SaveDraftInput } from '../sync/DraftStore';
@@ -165,7 +169,7 @@ export class MindMapView extends FileView {
   private readonly navHistory = new MapNavigationHistory();
   private pendingReveal: MapRevealRequest | null = null;
   private nextRevealToken = 0;
-  private selectedHeaderLine: number | undefined = undefined;
+  private selectedAnchor: MapHistoryAnchor | undefined = undefined;
   private suppressNextLoadHistoryRecord = false;
   private isNavigating = false;
   private loadSequence = 0;
@@ -173,8 +177,8 @@ export class MindMapView extends FileView {
   private readonly registerActionTriggers = (triggers: MindMapActionTriggers | null): void => {
     this.actionTriggers = triggers;
   };
-  private readonly handleSelectedLineChange = (line: number | undefined): void => {
-    this.selectedHeaderLine = line;
+  private readonly handleSelectedAnchorChange = (anchor: MapHistoryAnchor | undefined): void => {
+    this.selectedAnchor = anchor;
   };
 
   constructor(
@@ -352,7 +356,7 @@ export class MindMapView extends FileView {
     try {
       const currentPath = this.file?.path;
       if (currentPath) {
-        this.navHistory.updateCurrentAnchor(currentPath, this.selectedHeaderLine);
+        this.navHistory.updateCurrentAnchor(currentPath, this.selectedAnchor);
       }
 
       while (true) {
@@ -378,11 +382,12 @@ export class MindMapView extends FileView {
         }
 
         const nextReveal: MapRevealRequest | null =
-          target.targetSubpath !== undefined || target.targetLine !== undefined
+          target.targetAnchor !== undefined || target.targetSubpath !== undefined
             ? {
                 token: ++this.nextRevealToken,
                 filePath: target.filePath,
-                ...(target.targetLine !== undefined ? { line: target.targetLine } : {}),
+                fromHistory: true,
+                ...(target.targetAnchor !== undefined ? { anchor: target.targetAnchor } : {}),
                 ...(target.targetSubpath !== undefined ? { subpath: target.targetSubpath } : {}),
               }
             : null;
@@ -562,7 +567,7 @@ export class MindMapView extends FileView {
     this.parseResult = null;
     this.lastCommandFocus = null;
     this.lastRenderedSnapshot = null;
-    this.selectedHeaderLine = undefined;
+    this.selectedAnchor = undefined;
     if (this.pendingReveal?.filePath === file.path) {
       this.pendingReveal = null;
     }
@@ -575,7 +580,7 @@ export class MindMapView extends FileView {
     this.parseResult = null;
     this.lastCommandFocus = null;
     this.lastRenderedSnapshot = null;
-    this.selectedHeaderLine = undefined;
+    this.selectedAnchor = undefined;
     this.pendingReveal = null;
     this.navHistory.clear();
     this.actionTriggers = null;
@@ -679,7 +684,7 @@ export class MindMapView extends FileView {
         onNavigateForward: () => {
           void this.navigateForward();
         },
-        onSelectedLineChange: this.handleSelectedLineChange,
+        onSelectedAnchorChange: this.handleSelectedAnchorChange,
         themeMode: this.resolveThemeMode(),
         settings: this.plugin.mindMapSettings,
         messages: this.plugin.messages,
@@ -811,7 +816,7 @@ export class MindMapView extends FileView {
 
       if (destination.path === sourceFile.path) {
         if (subpath !== undefined) {
-          this.navHistory.updateCurrentAnchor(sourceFile.path, this.selectedHeaderLine);
+          this.navHistory.updateCurrentAnchor(sourceFile.path, this.selectedAnchor);
           this.navHistory.recordVisit({
             filePath: sourceFile.path,
             targetSubpath: subpath,
@@ -826,7 +831,7 @@ export class MindMapView extends FileView {
       this.isNavigating = true;
       this.suppressNextLoadHistoryRecord = true;
       try {
-        this.navHistory.updateCurrentAnchor(sourceFile.path, this.selectedHeaderLine);
+        this.navHistory.updateCurrentAnchor(sourceFile.path, this.selectedAnchor);
         this.navHistory.recordVisit({
           filePath: destination.path,
           ...(subpath !== undefined ? { targetSubpath: subpath } : {}),

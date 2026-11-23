@@ -2,10 +2,12 @@ import { describe, expect, it } from 'vitest';
 import { parseMarkdownToMap } from '../../src/core/parser';
 import {
   collectAncestorIds,
+  resolveHistoryAnchor,
   resolveTopicAtLine,
   resolveTopicBySubpath,
   splitLinkTargetSubpath,
 } from '../../src/core/view/topicResolver';
+import { buildAncestorPath, hasIdenticalStructuralSibling } from '../../src/sync/DraftStore';
 
 function parseOk(md: string) {
   const res = parseMarkdownToMap(md, 'Sample');
@@ -121,5 +123,55 @@ describe('topicResolver (M4-a cursor-to-map & link subpath resolution)', () => {
       (id) => doc.nodes.get(id)?.titleRaw,
     );
     expect(ancestorTitles).toEqual(['Phase 2', 'Roadmap', 'Root Map']);
+  });
+
+  it('resolves history Back anchors structurally after line shifts and fails closed when unidentifiable (Codex PR #16 P1)', () => {
+    const beforeDoc = parseOk('# Root\n- Prior\n- Link [[Target]] ^selected-link\n');
+    const linkBefore = [...beforeDoc.nodes.values()].find(
+      (n) => n.preservedBlockId === '^selected-link',
+    );
+    expect(linkBefore).toBeDefined();
+    if (!linkBefore) return;
+
+    const anchor = {
+      baseContentHash: beforeDoc.contentHash,
+      headerLine: linkBefore.headerLine,
+      titleRaw: linkBefore.titleRaw,
+      ancestorPath: buildAncestorPath(beforeDoc, linkBefore),
+      ownRangeHash: linkBefore.ownRangeHash,
+      preservedBlockId: linkBefore.preservedBlockId,
+      hadIdenticalSibling: hasIdenticalStructuralSibling(beforeDoc, linkBefore),
+    };
+
+    // 1. Preceding insert shifts Prior onto Link's old line -> MUST resolve to shifted Link (NEVER Prior!)
+    const shiftedDoc = parseOk('# Root\n- Inserted\n- Prior\n- Link [[Target]] ^selected-link\n');
+    const linkShifted = [...shiftedDoc.nodes.values()].find(
+      (n) => n.preservedBlockId === '^selected-link',
+    );
+    expect(linkShifted).toBeDefined();
+    if (!linkShifted) return;
+    expect(resolveHistoryAnchor(shiftedDoc, anchor)).toBe(linkShifted.id);
+
+    // 2. Original Link branch deleted while away -> MUST return null (never select Prior!)
+    const deletedDoc = parseOk('# Root\n- Inserted\n- Prior\n');
+    expect(resolveHistoryAnchor(deletedDoc, anchor)).toBeNull();
+
+    // 3. Without block ID, identical empty twins fail closed after document changes
+    const twinBefore = parseOk('# Root\n- Same\n- Same\n');
+    const secondTwin = [...twinBefore.nodes.values()].filter((n) => n.titleRaw === 'Same')[1];
+    expect(secondTwin).toBeDefined();
+    if (!secondTwin) return;
+    const twinAnchor = {
+      baseContentHash: twinBefore.contentHash,
+      headerLine: secondTwin.headerLine,
+      titleRaw: secondTwin.titleRaw,
+      ancestorPath: buildAncestorPath(twinBefore, secondTwin),
+      ownRangeHash: secondTwin.ownRangeHash,
+      preservedBlockId: secondTwin.preservedBlockId,
+      hadIdenticalSibling: hasIdenticalStructuralSibling(twinBefore, secondTwin),
+    };
+    expect(resolveHistoryAnchor(twinBefore, twinAnchor)).toBe(secondTwin.id);
+    const twinModified = parseOk('# Root\n- Inserted\n- Same\n');
+    expect(resolveHistoryAnchor(twinModified, twinAnchor)).toBeNull();
   });
 });

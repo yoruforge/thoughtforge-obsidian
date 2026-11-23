@@ -34,8 +34,10 @@ import {
   computeTopicNumbering,
 } from '../core/view/topicPresentation';
 import { extractNodeImageEmbeds } from '../core/view/imageEmbeds';
+import type { MapHistoryAnchor } from '../core/view/navigationHistory';
 import {
   collectAncestorIds,
+  resolveHistoryAnchor,
   resolveTopicAtLine,
   resolveTopicBySubpath,
 } from '../core/view/topicResolver';
@@ -45,6 +47,8 @@ import {
 } from '../core/view/viewStateRemap';
 import type { Messages } from '../i18n';
 import {
+  buildAncestorPath,
+  hasIdenticalStructuralSibling,
   resolveDraftTarget,
   type DraftResolution,
   type SaveDraftInput,
@@ -54,6 +58,7 @@ import type {
   BacklinkItem,
   CommandDispatchOutcome,
   NodeMetadataProvider,
+  ResolvedNodeImage,
 } from '../sync/ports';
 import type { NodeThumbnailInfo } from './DomNodeLayer';
 import {
@@ -100,6 +105,8 @@ export interface MindMapActionTriggers {
 export interface MapRevealRequest {
   readonly token: number;
   readonly filePath: string;
+  readonly fromHistory?: boolean;
+  readonly anchor?: MapHistoryAnchor;
   readonly line?: number;
   readonly subpath?: string;
 }
@@ -115,7 +122,7 @@ export interface MindMapAppProps {
   readonly forwardTitle?: string;
   readonly onNavigateBack?: () => void;
   readonly onNavigateForward?: () => void;
-  readonly onSelectedLineChange?: (line: number | undefined) => void;
+  readonly onSelectedAnchorChange?: (anchor: MapHistoryAnchor | undefined) => void;
   readonly themeMode: ResolvedThemeMode;
   readonly settings: PluginSettings;
   readonly messages: Messages;
@@ -174,6 +181,18 @@ function computeFitCamera(bounds: LayoutBounds, size: ViewportSize): CameraState
   };
 }
 
+function buildHistoryAnchor(doc: MindMapDocument, node: TopicNode): MapHistoryAnchor {
+  return {
+    baseContentHash: doc.contentHash,
+    headerLine: node.headerLine,
+    titleRaw: node.titleRaw,
+    ancestorPath: buildAncestorPath(doc, node),
+    ownRangeHash: node.ownRangeHash,
+    preservedBlockId: node.preservedBlockId,
+    hadIdenticalSibling: hasIdenticalStructuralSibling(doc, node),
+  };
+}
+
 export function MindMapApp({
   filePath,
   parseResult,
@@ -185,7 +204,7 @@ export function MindMapApp({
   forwardTitle,
   onNavigateBack,
   onNavigateForward,
-  onSelectedLineChange,
+  onSelectedAnchorChange,
   themeMode,
   settings,
   messages,
@@ -479,24 +498,42 @@ export function MindMapApp({
     [doc, settings.topicNumbering],
   );
 
-  // Resolve first safe vault image thumbnail per node (read-only via NodeMetadataProvider)
-  const nodeThumbnails = useMemo(() => {
-    const map = new Map<string, NodeThumbnailInfo>();
+  // Resolve safe vault image embeds per node (preferring Obsidian metadataCache.embeds when fresh)
+  const resolvedImagesByNode = useMemo<ReadonlyMap<string, readonly ResolvedNodeImage[]>>(() => {
     if (!doc || !metadataProvider || filePath.length === 0 || metadataVersion < 0) {
-      return map;
+      return new Map();
     }
+    if (typeof metadataProvider.getResolvedNodeImages === 'function') {
+      return metadataProvider.getResolvedNodeImages(filePath, doc);
+    }
+    const map = new Map<string, ResolvedNodeImage[]>();
     for (const node of doc.nodes.values()) {
       const embeds = extractNodeImageEmbeds(node);
+      if (embeds.length === 0) continue;
+      const list: ResolvedNodeImage[] = [];
       for (const embed of embeds) {
         const resolvedSrc = metadataProvider.getResolvedImageSrc(filePath, embed.target);
         if (resolvedSrc !== null) {
-          map.set(node.id, { src: resolvedSrc, alt: embed.alt });
-          break;
+          list.push({ target: embed.target, src: resolvedSrc, alt: embed.alt });
         }
+      }
+      if (list.length > 0) {
+        map.set(node.id, list);
       }
     }
     return map;
   }, [doc, filePath, metadataProvider, metadataVersion]);
+
+  const nodeThumbnails = useMemo(() => {
+    const map = new Map<string, NodeThumbnailInfo>();
+    for (const [nodeId, list] of resolvedImagesByNode) {
+      const first = list[0];
+      if (first) {
+        map.set(nodeId, { src: first.src, alt: first.alt });
+      }
+    }
+    return map;
+  }, [resolvedImagesByNode]);
 
   const thumbnailNodeIds = useMemo(() => new Set(nodeThumbnails.keys()), [nodeThumbnails]);
 
@@ -504,46 +541,19 @@ export function MindMapApp({
     doc && effectiveSelectedId !== null ? (doc.nodes.get(effectiveSelectedId) ?? null) : null;
 
   const selectedNodeImages = useMemo<readonly PopoverImageItem[]>(() => {
-    if (
-      !popoverOpen ||
-      !selectedNodeForMeta ||
-      !metadataProvider ||
-      filePath.length === 0 ||
-      metadataVersion < 0
-    ) {
+    if (!popoverOpen || !selectedNodeForMeta) {
       return [];
     }
-    const items: PopoverImageItem[] = [];
-    for (const embed of extractNodeImageEmbeds(selectedNodeForMeta)) {
-      const src = metadataProvider.getResolvedImageSrc(filePath, embed.target);
-      if (src !== null) {
-        items.push({ target: embed.target, src, alt: embed.alt });
-      }
-      if (items.length >= 6) break;
-    }
-    return items;
-  }, [popoverOpen, selectedNodeForMeta, metadataProvider, filePath, metadataVersion]);
+    return (resolvedImagesByNode.get(selectedNodeForMeta.id) ?? []).slice(0, 6);
+  }, [popoverOpen, selectedNodeForMeta, resolvedImagesByNode]);
 
   const selectedNodeBacklinks = useMemo<readonly BacklinkItem[] | undefined>(() => {
     if (!popoverOpen || !doc || !metadataProvider || filePath.length === 0 || metadataVersion < 0) {
       return undefined;
     }
-    const anchors: string[] = [];
-    if (selectedNodeForMeta && selectedNodeForMeta.kind !== 'central-virtual') {
-      if (selectedNodeForMeta.preservedBlockId !== null) {
-        anchors.push(selectedNodeForMeta.preservedBlockId);
-      }
-      if (selectedNodeForMeta.displayTitle.length > 0) {
-        anchors.push(selectedNodeForMeta.displayTitle);
-      }
-      if (
-        selectedNodeForMeta.titleRaw.length > 0 &&
-        selectedNodeForMeta.titleRaw !== selectedNodeForMeta.displayTitle
-      ) {
-        anchors.push(selectedNodeForMeta.titleRaw);
-      }
-    }
-    return metadataProvider.getBacklinks(filePath, anchors.length > 0 ? anchors : undefined);
+    const queryTarget =
+      selectedNodeForMeta !== null ? { doc, nodeId: selectedNodeForMeta.id } : undefined;
+    return metadataProvider.getBacklinks(filePath, queryTarget);
   }, [popoverOpen, doc, selectedNodeForMeta, metadataProvider, filePath, metadataVersion]);
 
   const metadataFreshness = useMemo<'fresh' | 'updating' | undefined>(() => {
@@ -632,16 +642,35 @@ export function MindMapApp({
     }
   }, [settings.layoutMode, layout]);
 
-  // Report active topic header line to host view so history Back restores the exact topic
+  // Report structural anchor of active topic to host view so history Back restores the exact topic
+  // (or fails closed to unselected when external edits shift lines or remove the original branch).
   useEffect(() => {
-    if (!onSelectedLineChange) return;
+    if (!onSelectedAnchorChange) return;
     if (!doc || effectiveSelectedId === null) {
-      onSelectedLineChange(undefined);
+      onSelectedAnchorChange(undefined);
       return;
     }
     const node = doc.nodes.get(effectiveSelectedId);
-    onSelectedLineChange(node?.headerLine);
-  }, [doc, effectiveSelectedId, onSelectedLineChange]);
+    onSelectedAnchorChange(node ? buildHistoryAnchor(doc, node) : undefined);
+  }, [doc, effectiveSelectedId, onSelectedAnchorChange]);
+
+  const handleOpenLinkFromMap = useCallback(
+    (link: TopicLink, newTab: boolean, sourceNodeId?: string) => {
+      if (!newTab && onSelectedAnchorChange && doc) {
+        const anchorNode =
+          sourceNodeId !== undefined
+            ? doc.nodes.get(sourceNodeId)
+            : effectiveSelectedId !== null
+              ? doc.nodes.get(effectiveSelectedId)
+              : undefined;
+        if (anchorNode) {
+          onSelectedAnchorChange(buildHistoryAnchor(doc, anchorNode));
+        }
+      }
+      onOpenLink(link, newTab);
+    },
+    [doc, effectiveSelectedId, onSelectedAnchorChange, onOpenLink],
+  );
 
   // Process explicit reveal requests (from cursor-to-map, [[Note#Heading]] / [[Note#^blk]], or history)
   useEffect(() => {
@@ -656,14 +685,35 @@ export function MindMapApp({
     lastHandledRevealTokenRef.current = revealRequest.token;
 
     let targetId: string | null = null;
-    if (revealRequest.subpath !== undefined) {
+    let failClosedIfUnresolved = false;
+    if (revealRequest.anchor !== undefined) {
+      failClosedIfUnresolved = true;
+      targetId = resolveHistoryAnchor(doc, revealRequest.anchor);
+    } else if (revealRequest.subpath !== undefined) {
+      failClosedIfUnresolved = revealRequest.fromHistory === true;
       targetId = resolveTopicBySubpath(doc, revealRequest.subpath);
-    }
-    if (targetId === null && revealRequest.line !== undefined) {
+    } else if (revealRequest.line !== undefined) {
       targetId = resolveTopicAtLine(doc, revealRequest.line);
     }
-    const resolvedId = targetId ?? doc.rootId;
 
+    setPopoverOpen(false);
+    setStylesOpen(false);
+    setEditingSession(null);
+
+    if (targetId === null && failClosedIfUnresolved) {
+      // Fail closed: original history branch cannot be uniquely proven after external edits.
+      // Leave selection empty so Delete can NEVER remove another branch.
+      setSelectionState({
+        filePath,
+        doc,
+        nodeId: null,
+        unresolved: true,
+      });
+      pendingRevealFitNodeIdRef.current = doc.rootId;
+      return;
+    }
+
+    const resolvedId = targetId ?? doc.rootId;
     const ancestors = collectAncestorIds(doc, resolvedId);
     if (ancestors.length > 0) {
       setBaseCollapsedIds((prev) => {
@@ -678,9 +728,6 @@ export function MindMapApp({
       });
     }
 
-    setPopoverOpen(false);
-    setStylesOpen(false);
-    setEditingSession(null);
     selectNode(resolvedId, doc, filePath);
     pendingRevealFitNodeIdRef.current = resolvedId;
   }, [doc, filePath, revealRequest, selectNode]);
@@ -2129,7 +2176,7 @@ export function MindMapApp({
             setPopoverOpen(true);
             setStylesOpen(false);
           }}
-          onOpenLink={onOpenLink}
+          onOpenLink={handleOpenLinkFromMap}
           onStartEdit={handleStartEdit}
           onCommitEdit={handleCommitEdit}
           onSplitEdit={handleSplitEdit}
@@ -2179,7 +2226,7 @@ export function MindMapApp({
             metadataFreshness={metadataFreshness}
             onClose={handleClosePopover}
             onJumpToSource={(line) => onOpenMarkdown(line)}
-            onOpenLink={onOpenLink}
+            onOpenLink={(link, newTab) => handleOpenLinkFromMap(link, newTab, selectedNode.id)}
           />
         )}
 

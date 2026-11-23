@@ -1,22 +1,53 @@
 import { describe, expect, it } from 'vitest';
+import { parseMarkdownToMap } from '../../src/core/parser';
 import {
-  doesLinkSubpathMatchAnchors,
+  doesLinkTargetTopicNode,
   formatSourceTitleFromPath,
   sortBacklinks,
 } from '../../src/core/view/backlinks';
 
-describe('backlinks (M4-b anchor matching & deterministic sorting)', () => {
-  it('matches heading, nested heading, formatted heading, URL-encoded Japanese heading, and case-insensitive block IDs', () => {
-    const anchors = ['^blk-alpha', 'Section Alpha', '**Section** Alpha', '設計方針'];
+function parseOk(md: string) {
+  const res = parseMarkdownToMap(md, 'Target');
+  if (res.status !== 'ok') throw new Error(`parse failed: ${res.detail}`);
+  return res.document;
+}
 
-    expect(doesLinkSubpathMatchAnchors('target#Section Alpha', anchors)).toBe(true);
-    expect(doesLinkSubpathMatchAnchors('target#Parent#Section Alpha', anchors)).toBe(true);
-    expect(doesLinkSubpathMatchAnchors('target#^BLK-ALPHA', anchors)).toBe(true);
-    expect(doesLinkSubpathMatchAnchors('target#%E8%A8%AD%E8%A8%88%E6%96%B9%E9%87%9D', anchors)).toBe(
-      true,
+describe('backlinks (M4-b exact topic resolution & deterministic sorting)', () => {
+  it('matches nested subheadings strictly so [[Target#One#Summary]] never falsely marks Two > Summary (Codex PR #17 P2)', () => {
+    const doc = parseOk(
+      [
+        '# Target',
+        '## One',
+        '### Summary',
+        '## Two',
+        '### Summary',
+        '## **Section** Alpha ^blk-alpha',
+        '## 設計方針',
+        '',
+      ].join('\n'),
     );
-    expect(doesLinkSubpathMatchAnchors('target#Other Section', anchors)).toBe(false);
-    expect(doesLinkSubpathMatchAnchors('target', anchors)).toBe(false);
+
+    const summaries = [...doc.nodes.values()].filter((n) => n.titleRaw === 'Summary');
+    const oneSummary = summaries.find((n) => doc.nodes.get(n.parentId ?? '')?.titleRaw === 'One');
+    const twoSummary = summaries.find((n) => doc.nodes.get(n.parentId ?? '')?.titleRaw === 'Two');
+    const alphaNode = [...doc.nodes.values()].find((n) => n.preservedBlockId === '^blk-alpha');
+    const jpNode = [...doc.nodes.values()].find((n) => n.titleRaw === '設計方針');
+    expect(oneSummary && twoSummary && alphaNode && jpNode).toBeTruthy();
+    if (!oneSummary || !twoSummary || !alphaNode || !jpNode) return;
+
+    // Qualified nested heading link matches ONLY One > Summary, NEVER Two > Summary!
+    expect(doesLinkTargetTopicNode(doc, 'Target#One#Summary', oneSummary.id)).toBe(true);
+    expect(doesLinkTargetTopicNode(doc, 'Target#One#Summary', twoSummary.id)).toBe(false);
+    expect(doesLinkTargetTopicNode(doc, 'Target#Two#Summary', twoSummary.id)).toBe(true);
+    expect(doesLinkTargetTopicNode(doc, 'Target#Two#Summary', oneSummary.id)).toBe(false);
+
+    // Block ID, formatted heading, URL-encoded Japanese heading, and plain note link
+    expect(doesLinkTargetTopicNode(doc, 'Target#^BLK-ALPHA', alphaNode.id)).toBe(true);
+    expect(doesLinkTargetTopicNode(doc, 'Target#Section Alpha', alphaNode.id)).toBe(true);
+    expect(
+      doesLinkTargetTopicNode(doc, 'Target#%E8%A8%AD%E8%A8%88%E6%96%B9%E9%87%9D', jpNode.id),
+    ).toBe(true);
+    expect(doesLinkTargetTopicNode(doc, 'Target', oneSummary.id)).toBe(false);
   });
 
   it('sorts direct anchor backlinks ahead of note-level backlinks and formats titles cleanly', () => {

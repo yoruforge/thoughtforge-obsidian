@@ -1,4 +1,5 @@
 import type { MindMapDocument, TopicNode } from '../model';
+import type { MapHistoryAnchor } from './navigationHistory';
 
 function stripInlineFormatting(raw: string): string {
   return raw
@@ -194,4 +195,96 @@ export function collectAncestorIds(doc: MindMapDocument, nodeId: string): readon
     cursor = doc.nodes.get(cursor)?.parentId ?? null;
   }
   return ancestors;
+}
+
+function buildAncestorTitlePath(doc: MindMapDocument, node: TopicNode): readonly string[] {
+  const segments: string[] = [];
+  const visited = new Set<string>([node.id]);
+  let cursor = node.parentId;
+  while (cursor !== null && !visited.has(cursor)) {
+    visited.add(cursor);
+    const parent = doc.nodes.get(cursor);
+    if (!parent) break;
+    segments.push(parent.titleRaw);
+    cursor = parent.parentId;
+  }
+  segments.reverse();
+  return segments;
+}
+
+function sameStringList(a: readonly string[], b: readonly string[]): boolean {
+  if (a.length !== b.length) return false;
+  for (let i = 0; i < a.length; i += 1) {
+    if (a[i] !== b[i]) return false;
+  }
+  return true;
+}
+
+/**
+ * Strictly fail-closed structural resolver for history Back/Forward return anchors.
+ * - Unchanged document (`contentHash === baseContentHash`): exact `headerLine` + `titleRaw` match.
+ * - Modified document:
+ *   1. If an explicit Obsidian block ID was captured (`preservedBlockId !== null`), matches ONLY
+ *      when that exact block ID is unique in `doc` AND still matches the original topic's
+ *      `titleRaw` (preventing line-shift mis-selection onto a different sibling like `Prior`).
+ *   2. Otherwise (no block ID), requires `!hadIdenticalSibling` and a unique topic matching exact
+ *      `ancestorPath`, `titleRaw`, `ownRangeHash`, and `preservedBlockId === null`.
+ * - Returns `null` whenever the original topic cannot be uniquely proven so selection stays empty
+ *   and destructive commands like `Delete` cannot touch another branch.
+ */
+export function resolveHistoryAnchor(
+  doc: MindMapDocument,
+  anchor: MapHistoryAnchor,
+): string | null {
+  if (doc.contentHash === anchor.baseContentHash) {
+    for (const node of doc.nodes.values()) {
+      if (node.kind === 'central-virtual') continue;
+      if (node.headerLine === anchor.headerLine && node.titleRaw === anchor.titleRaw) {
+        return node.id;
+      }
+    }
+    if (anchor.headerLine === 0) {
+      const root = doc.nodes.get(doc.rootId);
+      if (root && root.titleRaw === anchor.titleRaw) {
+        return root.id;
+      }
+    }
+    return null;
+  }
+
+  // Document changed while user was away: never fall back to raw line number!
+  if (anchor.preservedBlockId !== null) {
+    const blockMatches: TopicNode[] = [];
+    for (const node of doc.nodes.values()) {
+      if (node.preservedBlockId === anchor.preservedBlockId) {
+        blockMatches.push(node);
+      }
+    }
+    if (
+      blockMatches.length === 1 &&
+      blockMatches[0] &&
+      blockMatches[0].titleRaw === anchor.titleRaw
+    ) {
+      return blockMatches[0].id;
+    }
+    return null;
+  }
+
+  if (anchor.hadIdenticalSibling) {
+    return null;
+  }
+
+  const structuralMatches: TopicNode[] = [];
+  for (const node of doc.nodes.values()) {
+    if (node.kind === 'central-virtual') continue;
+    if (
+      node.titleRaw === anchor.titleRaw &&
+      node.ownRangeHash === anchor.ownRangeHash &&
+      node.preservedBlockId === null &&
+      sameStringList(buildAncestorTitlePath(doc, node), anchor.ancestorPath)
+    ) {
+      structuralMatches.push(node);
+    }
+  }
+  return structuralMatches.length === 1 && structuralMatches[0] ? structuralMatches[0].id : null;
 }
