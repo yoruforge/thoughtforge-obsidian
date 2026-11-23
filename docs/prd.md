@@ -70,12 +70,12 @@ frontmatter、フェンス／インデントコードブロック、表、引用
 
 - **M0**：基盤＆技術スパイク（環境・ビルド・Lint・テスト構築）— **完了**
 - **M1**：閲覧 MVP（通常 `.md` パーサー、Fail-Closed、左右レイアウト、階層テーマ、折りたたみ/深度、Focus/Filter、Zoom/Pan、ポップオーバー閲覧、ソース行ジャンプ）— **完了（PR #1）**
-- **M2-a**：最小編集スライス（最小差分パッチ `rename`/`insertChild`/`insertSibling`、Dry-Run 再解析、`vault.process` CAS 照合、未保存 Markdown 競合保護、日本語 IME ガード、`View.scope` `F2`）— **実装＆実機検証完了（PR #2）**
-- **M2-b**：構造編集・削除＆Undo/Redo（`Shift+Tab` 新親・`Delete` 枝削除・`Cmd+Backspace` 子昇格削除・`Cmd+Arrow` 並替/昇降・`Cmd+Enter` 分割・`Cmd+Z/Shift+Z` Undo/Redo・タスク `[ ]`↔`[x]` 切替）
-- **M2-ui**：Visual Design & UI/UX Polish（iThoughts 動画 10 件分析の表現層・UI 踏襲：テーパード曲線、下線接続、カラーモード・レイアウト・グリッド、Quick Style Popover、ノートホバープレビュー、構造化フィルタ、SVG バッジ、選択自動追従、非破壊トピック番号付け）
-- **M2-c / M3**：下書き保護＋本文直接編集＆実用化（`DraftStore` による `field: 'title' | 'note'` 下書き退避・回復と同時公開する `NodePopover` トピックノート直接編集・`Cmd+Shift+T`、D&D 再配置・並替、枝コピペ、実機受入テスト）
-- **M4**：Obsidian 強化（Vault 連携・非破壊サイドカー視覚拡張検討）
-- **M5**：拡張（簡易プレゼンテーション・エクスポート・`.itmz` インポート等）
+- **M2-a**：最小編集スライス（最小差分パッチ `rename`/`insertChild`/`insertSibling`、Dry-Run 再解析、`vault.process` CAS 照合、未保存 Markdown 競合保護、日本語 IME ガード、`View.scope` `F2`）— **完了（PR #2）**
+- **M2-b**：構造編集・削除＆Undo/Redo（`Shift+Tab` 新親・`Delete` 枝削除・`Cmd+Backspace` 子昇格削除・`Cmd+Arrow` 並替/昇降・`Cmd+Enter` 分割・`Cmd+Z/Shift+Z` Undo/Redo・タスク `[ ]`↔`[x]` 切替）— **完了（PR #4）**
+- **M2-ui**：Visual Design & UI/UX Polish（iThoughts 動画 10 件分析の表現層・UI 踏襲：テーパード曲線、下線接続、カラーモード・レイアウト・グリッド、Quick Style Popover、ノートホバープレビュー、構造化フィルタ、SVG バッジ、選択自動追従、非破壊トピック番号付け）— **完了（PR #3・PR #5）**
+- **M2-c / M3**：下書き保護＋本文直接編集＆実用化（`DraftStore` による `field: 'title' | 'note'` 下書き退避・構造識別／旧版互換フェイルクローズ／手動復元、`NodePopover` トピックノート直接編集・`Cmd+Shift+T`、D&D 再配置・並替、枝コピペ、Phase 1 ハードニング＆隔離 Obsidian 1.15.1 受入検証）— **完了（PR #6〜#10）**
+- **M4**：Obsidian 強化（Vault 連携・非破壊サイドカー視覚拡張検討）— **未着手**
+- **M5**：拡張（簡易プレゼンテーション・エクスポート・`.itmz` インポート等）— **未着手**
 
 ---
 
