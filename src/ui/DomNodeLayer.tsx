@@ -1,15 +1,65 @@
-import type { CSSProperties, MouseEvent, MutableRefObject } from 'react';
-import type { LayoutNode, MindMapDocument, TopicLink } from '../core/model';
+import { useState, type CSSProperties, type MouseEvent, type MutableRefObject } from 'react';
+import type { ColorStyleMode, LayoutNode, MindMapDocument, TopicLink } from '../core/model';
 import {
   getBranchColor,
   resolveLevelStyle,
+  resolveNodeVisualColors,
   type MapThemePalette,
 } from '../core/layout/theme';
+import { tokenizeTopicTitle } from '../core/view/topicPresentation';
 import type { EditingSession } from './editSession';
+import { BlockIcon, CheckIcon, LinkIcon, NoteIcon } from './Icons';
 import type { GuardableKeyEvent } from './imeGuard';
 import { InlineEditor } from './InlineEditor';
 
 const STANDARD_TASK_PREFIX_RE = /^\[([ xX])\][ \t]+$/;
+
+function formatNoteHoverPreview(noteText: string): string {
+  const lines = noteText.trim().split('\n').slice(0, 4);
+  const joined = lines.join('\n');
+  if (joined.length > 220) {
+    return `${joined.slice(0, 217)}…`;
+  }
+  return noteText.trim().split('\n').length > 4 ? `${joined}…` : joined;
+}
+
+function renderTitleWithTagPills(
+  titleRaw: string,
+  displayTitle: string,
+  isVirtualRoot: boolean,
+  isTaskDone: boolean,
+) {
+  if (isVirtualRoot) {
+    const label = displayTitle.length > 0 ? displayTitle : '(untitled)';
+    return <span className={isTaskDone ? 'ito-node-title-done' : undefined}>{label}</span>;
+  }
+
+  const segments = tokenizeTopicTitle(titleRaw);
+  if (segments.length === 0) {
+    const fallback = displayTitle.length > 0 ? displayTitle : '(untitled)';
+    return <span className={isTaskDone ? 'ito-node-title-done' : undefined}>{fallback}</span>;
+  }
+
+  const hasAnyTag = segments.some((seg) => seg.kind === 'tag');
+  if (!hasAnyTag) {
+    const label = displayTitle.length > 0 ? displayTitle : '(untitled)';
+    return <span className={isTaskDone ? 'ito-node-title-done' : undefined}>{label}</span>;
+  }
+
+  return (
+    <span className={isTaskDone ? 'ito-node-title-done' : undefined}>
+      {segments.map((seg, index) =>
+        seg.kind === 'tag' ? (
+          <span key={`${index}-${seg.text}`} className="ito-node-tag-pill">
+            {seg.text}
+          </span>
+        ) : (
+          <span key={`${index}-txt`}>{seg.text}</span>
+        ),
+      )}
+    </span>
+  );
+}
 
 export interface DomNodeLayerProps {
   readonly document: MindMapDocument;
@@ -23,8 +73,10 @@ export interface DomNodeLayerProps {
   readonly dimmedNodeIds: ReadonlySet<string>;
   readonly matchedNodeIds: ReadonlySet<string>;
   readonly effectiveCollapsedIds: ReadonlySet<string>;
+  readonly numberingLabels: ReadonlyMap<string, string>;
   readonly palette: MapThemePalette;
   readonly rainbowBranches: boolean;
+  readonly colorStyle: ColorStyleMode;
   readonly onSelectNode: (nodeId: string) => void;
   readonly onToggleCollapse: (nodeId: string) => void;
   readonly onOpenPopover: (nodeId: string) => void;
@@ -50,8 +102,10 @@ export function DomNodeLayer({
   dimmedNodeIds,
   matchedNodeIds,
   effectiveCollapsedIds,
+  numberingLabels,
   palette,
   rainbowBranches,
+  colorStyle,
   onSelectNode,
   onToggleCollapse,
   onOpenPopover,
@@ -64,6 +118,7 @@ export function DomNodeLayer({
   onDiscardEdit,
   onToggleTask,
 }: DomNodeLayerProps) {
+  const [hoveredNoteNodeId, setHoveredNoteNodeId] = useState<string | null>(null);
   const isReadOnly = !canEdit || document.readOnlyReasons.length > 0;
 
   return (
@@ -73,13 +128,20 @@ export function DomNodeLayer({
         if (!topic) return null;
 
         const levelStyle = resolveLevelStyle(ln.depth);
-        const branchColor = getBranchColor(palette, ln.branchColorIndex, rainbowBranches);
+        const branchColor = getBranchColor(palette, ln.branchColorIndex, rainbowBranches, colorStyle);
         const isCenter = ln.side === 'center';
         const isSelected = selectedId === ln.id;
         const isDimmed = dimmedNodeIds.has(ln.id);
         const isMatched = matchedNodeIds.has(ln.id);
         const hasChildren = topic.childIds.length > 0;
         const isCollapsed = effectiveCollapsedIds.has(ln.id);
+        const visualColors = resolveNodeVisualColors(
+          palette,
+          branchColor,
+          levelStyle.shape,
+          colorStyle,
+          isCenter,
+        );
 
         const nodeStyle: CSSProperties = {
           left: `${ln.x}px`,
@@ -89,15 +151,11 @@ export function DomNodeLayer({
           fontSize: `${levelStyle.fontSizePx}px`,
           fontWeight: levelStyle.fontWeight,
           padding: `${levelStyle.paddingY}px ${levelStyle.paddingX}px`,
-          borderRadius: `${levelStyle.borderRadiusPx}px`,
-          opacity: isDimmed && !isSelected ? 0.28 : 1,
-          backgroundColor: isCenter
-            ? palette.centralBg
-            : levelStyle.shape === 'underline'
-              ? 'transparent'
-              : palette.nodeBg,
-          color: isCenter ? palette.centralText : palette.textPrimary,
-          borderColor: isCenter ? palette.centralBorder : branchColor,
+          borderRadius: levelStyle.shape === 'underline' ? '2px 2px 0 0' : `${levelStyle.borderRadiusPx}px`,
+          opacity: isDimmed && !isSelected ? 0.24 : 1,
+          backgroundColor: visualColors.backgroundColor,
+          color: visualColors.textColor,
+          borderColor: visualColors.borderColor,
           borderWidth:
             levelStyle.shape === 'underline'
               ? `0 0 ${levelStyle.borderWidthPx}px 0`
@@ -128,6 +186,7 @@ export function DomNodeLayer({
           topic.kind === 'list-item' ? STANDARD_TASK_PREFIX_RE.exec(topic.preservedPrefix) : null;
         const isStandardTask = taskMatch !== null;
         const isTaskDone = taskMatch?.[1] === 'x' || taskMatch?.[1] === 'X';
+        const numberLabel = numberingLabels.get(ln.id);
 
         const activeEditingSession =
           editingSession !== null && editingSession.nodeId === ln.id ? editingSession : null;
@@ -142,6 +201,25 @@ export function DomNodeLayer({
         ]
           .filter(Boolean)
           .join(' ');
+
+        const showNoteHover = hoveredNoteNodeId === ln.id && topic.noteText !== null && !isEditing;
+
+        const collapseHandleClass = [
+          'ito-collapse-handle',
+          `ito-collapse-handle-${ln.side}`,
+          isCollapsed ? 'ito-collapse-handle-collapsed' : 'ito-collapse-handle-expanded',
+        ].join(' ');
+
+        const collapseHandleStyle: CSSProperties = isCollapsed
+          ? {
+              borderColor: branchColor,
+              backgroundColor: branchColor,
+              color: '#ffffff',
+            }
+          : {
+              borderColor: branchColor,
+              color: palette.textPrimary,
+            };
 
         return (
           <div
@@ -181,7 +259,7 @@ export function DomNodeLayer({
                 onDiscard={onDiscardEdit}
               />
             ) : (
-              <span className="ito-node-title">
+              <>
                 {topic.preservedPrefix.length > 0 &&
                   (isStandardTask && !isReadOnly ? (
                     <button
@@ -197,15 +275,23 @@ export function DomNodeLayer({
                         onToggleTask(ln.id);
                       }}
                     >
-                      {topic.preservedPrefix.trim()}
+                      {isTaskDone ? <CheckIcon /> : null}
                     </button>
                   ) : (
                     <span className="ito-node-task-prefix">{topic.preservedPrefix}</span>
                   ))}
-                <span className={isTaskDone ? 'ito-node-title-done' : undefined}>
-                  {topic.displayTitle.length > 0 ? topic.displayTitle : '(untitled)'}
+                <span className="ito-node-title">
+                  {numberLabel !== undefined && (
+                    <span className="ito-node-number">{numberLabel}</span>
+                  )}
+                  {renderTitleWithTagPills(
+                    topic.titleRaw,
+                    topic.displayTitle,
+                    topic.kind === 'central-virtual',
+                    isTaskDone,
+                  )}
                 </span>
-              </span>
+              </>
             )}
 
             {(topic.noteRange !== null ||
@@ -218,9 +304,11 @@ export function DomNodeLayer({
                     className="ito-badge ito-badge-note"
                     title="Topic note"
                     aria-label="Open topic note"
+                    onMouseEnter={() => setHoveredNoteNodeId(ln.id)}
+                    onMouseLeave={() => setHoveredNoteNodeId((prev) => (prev === ln.id ? null : prev))}
                     onClick={handleBadgeClick}
                   >
-                    N
+                    <NoteIcon />
                   </button>
                 )}
                 {topic.unmappedBlocks.length > 0 && (
@@ -231,7 +319,7 @@ export function DomNodeLayer({
                     aria-label="Inspect preserved blocks"
                     onClick={handleBadgeClick}
                   >
-                    !
+                    <BlockIcon />
                   </button>
                 )}
                 {firstLink !== undefined && (
@@ -242,17 +330,23 @@ export function DomNodeLayer({
                     aria-label={`Open link ${firstLink.label}`}
                     onClick={handleLinkClick}
                   >
-                    ↗
+                    <LinkIcon />
                   </button>
                 )}
               </span>
             )}
 
+            {showNoteHover && topic.noteText !== null && (
+              <div className="ito-note-hover-preview" role="tooltip">
+                {formatNoteHoverPreview(topic.noteText)}
+              </div>
+            )}
+
             {hasChildren && !isCenter && (
               <button
                 type="button"
-                className={`ito-collapse-handle ito-collapse-handle-${ln.side}`}
-                style={{ borderColor: branchColor, color: palette.textPrimary }}
+                className={collapseHandleClass}
+                style={collapseHandleStyle}
                 aria-label={isCollapsed ? 'Expand branch' : 'Collapse branch'}
                 onClick={handleCollapseClick}
               >

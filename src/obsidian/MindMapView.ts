@@ -15,6 +15,7 @@ import type { SemanticCommand } from '../core/patch/commands';
 import type { Messages } from '../i18n';
 import type { CommandDispatchOutcome, SyncRejectCode } from '../sync/ports';
 import { MindMapApp, type MindMapActionTriggers } from '../ui/App';
+import { isInsideMapPopover } from '../ui/keyboardGuard';
 import type ThoughtForgePlugin from '../main';
 import { promptConfirmDeleteBranch } from './ConfirmModal';
 import {
@@ -180,6 +181,10 @@ export class MindMapView extends FileView {
       if (!this.canHandleScopeShortcut(evt)) return undefined;
       return this.actionTriggers?.editSelected() ? false : undefined;
     });
+    this.scope.register(['Mod', 'Shift'], '0', (evt) => {
+      if (evt.altKey || !this.canHandleScopeShortcut(evt)) return undefined;
+      return this.actionTriggers?.fitSelection() ? false : undefined;
+    });
   }
 
   private canHandleScopeShortcut(evt: KeyboardEvent): boolean {
@@ -188,6 +193,8 @@ export class MindMapView extends FileView {
     return shouldTriggerMindMapScopeShortcut(evt, {
       targetIsEditable: isEditableDomTarget(evt.target),
       activeElementIsEditable: isEditableDomTarget(activeEl),
+      targetInsidePopover: isInsideMapPopover(evt.target),
+      activeElementInsidePopover: isInsideMapPopover(activeEl),
       targetInsideMap: isNodeInsideContainer(this.contentEl, evt.target),
       activeElementInsideMap: isNodeInsideContainer(this.contentEl, activeEl),
       activeElementIsBody: activeEl === null || activeEl === ownerDoc.body,
@@ -389,14 +396,16 @@ export class MindMapView extends FileView {
         filePath: this.file?.path ?? '',
         parseResult: this.parseResult,
         themeMode: this.resolveThemeMode(),
-        rainbowBranches: this.plugin.mindMapSettings.rainbowBranches,
-        imeGuardWindowMs: this.plugin.mindMapSettings.imeGuardWindowMs,
+        settings: this.plugin.mindMapSettings,
         messages: this.plugin.messages,
         onOpenMarkdown: (line?: number) => {
           void this.openMarkdownAtLine(line);
         },
         onOpenLink: (link: TopicLink, newTab: boolean) => {
           void this.handleOpenLink(link, newTab);
+        },
+        onUpdateSettings: (patch) => {
+          void this.plugin.updateSettings(patch);
         },
         onDispatchCommand: (command: SemanticCommand) => this.dispatchCommand(command),
         onUndo: () => this.dispatchHistory('undo'),

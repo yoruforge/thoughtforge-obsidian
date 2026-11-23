@@ -13,14 +13,23 @@ import type {
   FocusMode,
   LayoutBounds,
   ParseResult,
+  PluginSettings,
+  StructuredFilterCriteria,
   TopicLink,
 } from '../core/model';
 import type { SemanticCommand } from '../core/patch/commands';
 import {
   computeDepthCollapsedIds,
   computeVisibilityAndEmphasis,
+  hasActiveStructuredFilter,
 } from '../core/view/filterFocus';
 import { resolveArrowNavigation, type ArrowDirection } from '../core/view/navigation';
+import {
+  collectDocumentTags,
+  computeDocumentTextStats,
+  computeSubtreeBounds,
+  computeTopicNumbering,
+} from '../core/view/topicPresentation';
 import type { Messages } from '../i18n';
 import type { CommandDispatchOutcome } from '../sync/ports';
 import {
@@ -32,7 +41,9 @@ import {
   type EditingSession,
 } from './editSession';
 import type { GuardableKeyEvent } from './imeGuard';
+import { shouldIgnoreCanvasKeyEvent } from './keyboardGuard';
 import { NodePopover } from './NodePopover';
+import { QuickStylePopover } from './QuickStylePopover';
 import { StatusBar } from './StatusBar';
 import { Toolbar } from './Toolbar';
 import {
@@ -47,17 +58,18 @@ export interface MindMapActionTriggers {
   readonly undo: () => boolean;
   readonly redo: () => boolean;
   readonly toggleSelectedTask: () => boolean;
+  readonly fitSelection: () => boolean;
 }
 
 export interface MindMapAppProps {
   readonly filePath: string;
   readonly parseResult: ParseResult;
   readonly themeMode: ResolvedThemeMode;
-  readonly rainbowBranches: boolean;
-  readonly imeGuardWindowMs: number;
+  readonly settings: PluginSettings;
   readonly messages: Messages;
   readonly onOpenMarkdown: (line?: number) => void;
   readonly onOpenLink: (link: TopicLink, newTab: boolean) => void;
+  readonly onUpdateSettings?: (patch: Partial<PluginSettings>) => void;
   readonly onDispatchCommand?: (command: SemanticCommand) => Promise<CommandDispatchOutcome>;
   readonly onUndo?: () => Promise<CommandDispatchOutcome>;
   readonly onRedo?: () => Promise<CommandDispatchOutcome>;
@@ -66,11 +78,11 @@ export interface MindMapAppProps {
 }
 
 function computeFitCamera(bounds: LayoutBounds, size: ViewportSize): CameraState {
-  const padding = 48;
+  const padding = Math.max(16, Math.min(40, Math.round(Math.min(size.width, size.height) * 0.06)));
   const contentW = Math.max(1, bounds.maxX - bounds.minX);
   const contentH = Math.max(1, bounds.maxY - bounds.minY);
-  const availW = Math.max(100, size.width - padding * 2);
-  const availH = Math.max(100, size.height - padding * 2);
+  const availW = Math.max(80, size.width - padding * 2);
+  const availH = Math.max(80, size.height - padding * 2);
   const zoom = clampZoom(Math.min(availW / contentW, availH / contentH, 1.15));
   const centerX = (bounds.minX + bounds.maxX) / 2;
   const centerY = (bounds.minY + bounds.maxY) / 2;
@@ -81,21 +93,15 @@ function computeFitCamera(bounds: LayoutBounds, size: ViewportSize): CameraState
   };
 }
 
-function isEditableTarget(target: EventTarget | null): boolean {
-  if (!(target instanceof HTMLElement)) return false;
-  const tag = target.tagName;
-  return tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT' || target.isContentEditable;
-}
-
 export function MindMapApp({
   filePath,
   parseResult,
   themeMode,
-  rainbowBranches,
-  imeGuardWindowMs,
+  settings,
   messages,
   onOpenMarkdown,
   onOpenLink,
+  onUpdateSettings,
   onDispatchCommand,
   onUndo,
   onRedo,
@@ -114,7 +120,9 @@ export function MindMapApp({
   );
   const [focusMode, setFocusMode] = useState<FocusMode>({ kind: 'off' });
   const [filterQuery, setFilterQuery] = useState('');
+  const [structuredFilter, setStructuredFilter] = useState<StructuredFilterCriteria>({});
   const [popoverOpen, setPopoverOpen] = useState(false);
+  const [stylesOpen, setStylesOpen] = useState(false);
   const [camera, setCamera] = useState<CameraState>({ x: 480, y: 320, zoom: 1 });
 
   const rootRef = useRef<HTMLDivElement | null>(null);
@@ -124,6 +132,7 @@ export function MindMapApp({
   docRef.current = doc;
   const viewportSizeRef = useRef<ViewportSize>({ width: 960, height: 640 });
   const hasInitialFitRef = useRef(false);
+  const prevLayoutModeRef = useRef(settings.layoutMode);
   const filterInputRef = useRef<HTMLInputElement | null>(null);
   const inlineSplitTriggerRef = useRef<((event: GuardableKeyEvent) => boolean) | null>(null);
   const isCommandInFlightRef = useRef(false);
@@ -135,7 +144,9 @@ export function MindMapApp({
     setUserOpenedDuringFilterIds(new Set());
     setFocusMode({ kind: 'off' });
     setFilterQuery('');
+    setStructuredFilter({});
     setPopoverOpen(false);
+    setStylesOpen(false);
     setEditingSession(null);
     setSelectedId(null);
   }, [filePath]);
@@ -153,6 +164,16 @@ export function MindMapApp({
     return isEditingSessionValid(editingSession, filePath, doc) ? editingSession : null;
   }, [editingSession, filePath, doc]);
 
+  const availableTags = useMemo(() => (doc ? collectDocumentTags(doc) : []), [doc]);
+  const textStats = useMemo(
+    () => (doc ? computeDocumentTextStats(doc) : { wordCount: 0, charCount: 0 }),
+    [doc],
+  );
+  const numberingLabels = useMemo(
+    () => (doc ? computeTopicNumbering(doc, settings.topicNumbering) : new Map<string, string>()),
+    [doc, settings.topicNumbering],
+  );
+
   const visibility = useMemo(() => {
     if (!doc) return null;
     return computeVisibilityAndEmphasis(doc, {
@@ -160,14 +181,27 @@ export function MindMapApp({
       focusMode,
       selectedId: effectiveSelectedId,
       filterQuery,
+      structuredFilter,
       userOpenedDuringFilterIds,
     });
-  }, [doc, baseCollapsedIds, focusMode, effectiveSelectedId, filterQuery, userOpenedDuringFilterIds]);
+  }, [
+    doc,
+    baseCollapsedIds,
+    focusMode,
+    effectiveSelectedId,
+    filterQuery,
+    structuredFilter,
+    userOpenedDuringFilterIds,
+  ]);
 
   const layout = useMemo(() => {
     if (!doc || !visibility) return null;
-    return computeLayout(doc, visibility.visibleNodeIds);
-  }, [doc, visibility]);
+    return computeLayout(doc, visibility.visibleNodeIds, undefined, undefined, {
+      layoutMode: settings.layoutMode,
+      edgeStyle: settings.edgeStyle,
+      numberingLabels,
+    });
+  }, [doc, visibility, settings.layoutMode, settings.edgeStyle, numberingLabels]);
 
   const layoutRef = useRef(layout);
   layoutRef.current = layout;
@@ -177,6 +211,20 @@ export function MindMapApp({
     if (!currentLayout) return;
     setCamera(computeFitCamera(currentLayout.bounds, viewportSizeRef.current));
   }, []);
+
+  const fitSelection = useCallback(() => {
+    const currentLayout = layoutRef.current;
+    const currentDoc = docRef.current;
+    if (!currentLayout || !currentDoc) return;
+    if (effectiveSelectedId === null || effectiveSelectedId === currentDoc.rootId) {
+      setCamera(computeFitCamera(currentLayout.bounds, viewportSizeRef.current));
+      return;
+    }
+    const subBounds = computeSubtreeBounds(currentDoc, currentLayout, effectiveSelectedId);
+    if (subBounds) {
+      setCamera(computeFitCamera(subBounds, viewportSizeRef.current));
+    }
+  }, [effectiveSelectedId]);
 
   const handleViewportResize = useCallback((size: ViewportSize) => {
     viewportSizeRef.current = size;
@@ -193,6 +241,47 @@ export function MindMapApp({
       setCamera(computeFitCamera(layout.bounds, viewportSizeRef.current));
     }
   }, [layout, filePath]);
+
+  // Re-fit smoothly when switching between Balanced / Right / Org Chart layouts
+  useEffect(() => {
+    if (prevLayoutModeRef.current !== settings.layoutMode) {
+      prevLayoutModeRef.current = settings.layoutMode;
+      if (layoutRef.current) {
+        setCamera(computeFitCamera(layoutRef.current.bounds, viewportSizeRef.current));
+      }
+    }
+  }, [settings.layoutMode, layout]);
+
+  // Auto-pan camera smoothly by the minimum delta when keyboard navigation or edits
+  // select a node outside the safe viewport margin (leaving bottom clearance for floating HUD).
+  useEffect(() => {
+    if (!effectiveSelectedId || !layoutRef.current || !hasInitialFitRef.current) return;
+    const ln = layoutRef.current.nodes.get(effectiveSelectedId);
+    if (!ln) return;
+    const size = viewportSizeRef.current;
+    const margin = 56;
+    const bottomMargin = 96;
+    setCamera((prev) => {
+      const left = prev.x + ln.x * prev.zoom;
+      const right = prev.x + (ln.x + ln.width) * prev.zoom;
+      const top = prev.y + ln.y * prev.zoom;
+      const bottom = prev.y + (ln.y + ln.height) * prev.zoom;
+      let dx = 0;
+      let dy = 0;
+      if (left < margin) {
+        dx = margin - left;
+      } else if (right > size.width - margin) {
+        dx = size.width - margin - right;
+      }
+      if (top < margin) {
+        dy = margin - top;
+      } else if (bottom > size.height - bottomMargin) {
+        dy = size.height - bottomMargin - bottom;
+      }
+      if (dx === 0 && dy === 0) return prev;
+      return { ...prev, x: prev.x + dx, y: prev.y + dy };
+    });
+  }, [effectiveSelectedId]);
 
   const handleToggleCollapse = useCallback(
     (nodeId: string) => {
@@ -250,6 +339,13 @@ export function MindMapApp({
   const handleFilterChange = useCallback((nextQuery: string) => {
     setFilterQuery(nextQuery);
     if (nextQuery.trim().length === 0) {
+      setUserOpenedDuringFilterIds(new Set());
+    }
+  }, []);
+
+  const handleStructuredFilterChange = useCallback((next: StructuredFilterCriteria) => {
+    setStructuredFilter(next);
+    if (!hasActiveStructuredFilter(next)) {
       setUserOpenedDuringFilterIds(new Set());
     }
   }, []);
@@ -314,12 +410,9 @@ export function MindMapApp({
               );
             }
           } else {
-            // Keep keyboard focus inside the map after node unmount/re-key (e.g. delete or reorder)
-            // so follow-up shortcuts work immediately without clicking the canvas again.
             rootRef.current?.focus({ preventScroll: true });
           }
         } else if (!outcome.accepted && outcome.rejectCode === 'boundary-no-op') {
-          // Restore focus to canvas after cancelling a confirmation modal.
           rootRef.current?.focus({ preventScroll: true });
         }
       } finally {
@@ -363,6 +456,7 @@ export function MindMapApp({
       const node = doc.nodes.get(nodeId);
       if (!node) return;
       setPopoverOpen(false);
+      setStylesOpen(false);
       setSelectedId(nodeId);
       setEditingSession(createEditingSession(filePath, doc, node));
     },
@@ -439,6 +533,7 @@ export function MindMapApp({
     undo: () => false,
     redo: () => false,
     toggleSelectedTask: () => false,
+    fitSelection: () => false,
   });
   actionTriggersRef.current = {
     editSelected: (): boolean => {
@@ -468,6 +563,11 @@ export function MindMapApp({
       handleToggleTask(effectiveSelectedId);
       return true;
     },
+    fitSelection: (): boolean => {
+      if (!doc || !layout || effectiveEditingSession !== null) return false;
+      fitSelection();
+      return true;
+    },
   };
 
   useEffect(() => {
@@ -478,6 +578,7 @@ export function MindMapApp({
       undo: () => actionTriggersRef.current.undo(),
       redo: () => actionTriggersRef.current.redo(),
       toggleSelectedTask: () => actionTriggersRef.current.toggleSelectedTask(),
+      fitSelection: () => actionTriggersRef.current.fitSelection(),
     };
     onRegisterActionTriggers(triggers);
     return () => {
@@ -491,14 +592,20 @@ export function MindMapApp({
     if (effectiveEditingSession !== null) return;
 
     if (event.key === 'Escape') {
+      if (stylesOpen) {
+        event.preventDefault();
+        setStylesOpen(false);
+        return;
+      }
       if (popoverOpen) {
         event.preventDefault();
         setPopoverOpen(false);
         return;
       }
-      if (filterQuery.length > 0) {
+      if (filterQuery.length > 0 || hasActiveStructuredFilter(structuredFilter)) {
         event.preventDefault();
         handleFilterChange('');
+        handleStructuredFilterChange({});
         return;
       }
       if (focusMode.kind !== 'off') {
@@ -508,7 +615,7 @@ export function MindMapApp({
       }
     }
 
-    if (isEditableTarget(event.target)) {
+    if (shouldIgnoreCanvasKeyEvent(event.target)) {
       return;
     }
 
@@ -519,14 +626,17 @@ export function MindMapApp({
     const modKey = event.metaKey || event.ctrlKey;
 
     if (modKey && !event.altKey) {
-      // Zoom fit shortcut (Cmd/Ctrl + 0)
-      if (event.key === '0' && !event.shiftKey) {
+      // Zoom fit shortcut (Cmd/Ctrl + 0) / Fit selection (Cmd/Ctrl + Shift + 0)
+      if (event.key === '0' || (event.shiftKey && event.code === 'Digit0')) {
         event.preventDefault();
-        fitView();
+        if (event.shiftKey) {
+          fitSelection();
+        } else {
+          fitView();
+        }
         return;
       }
 
-      // Undo / Redo fallback (also registered on View.scope in MindMapView)
       if (event.key.toLowerCase() === 'z') {
         event.preventDefault();
         void runHistoryStep(event.shiftKey ? 'redo' : 'undo');
@@ -538,14 +648,12 @@ export function MindMapApp({
         return;
       }
 
-      // Cmd/Ctrl + Enter starts inline edit on selected topic
       if (event.key === 'Enter' && !event.shiftKey && effectiveSelectedId !== null) {
         event.preventDefault();
         handleStartEdit(effectiveSelectedId);
         return;
       }
 
-      // Cmd/Ctrl + Backspace / Delete: delete node only & promote children
       if (
         (event.key === 'Backspace' || event.key === 'Delete') &&
         !event.shiftKey &&
@@ -566,7 +674,6 @@ export function MindMapApp({
         }
       }
 
-      // Cmd/Ctrl + ArrowUp / ArrowDown: reorder sibling
       if (
         (event.key === 'ArrowUp' || event.key === 'ArrowDown') &&
         !event.shiftKey &&
@@ -588,7 +695,6 @@ export function MindMapApp({
         }
       }
 
-      // Cmd/Ctrl + ArrowLeft / ArrowRight: side-aware indent / outdent
       if (
         (event.key === 'ArrowLeft' || event.key === 'ArrowRight') &&
         !event.shiftKey &&
@@ -599,7 +705,7 @@ export function MindMapApp({
         const targetLayout = layout.nodes.get(effectiveSelectedId);
         if (targetNode && targetLayout && targetLayout.side !== 'center') {
           event.preventDefault();
-          const outwardKey = targetLayout.side === 'right' ? 'ArrowRight' : 'ArrowLeft';
+          const outwardKey = targetLayout.side === 'left' ? 'ArrowLeft' : 'ArrowRight';
           const commandType = event.key === outwardKey ? 'indent' : 'outdent';
           void dispatchAndFocus(
             {
@@ -615,7 +721,6 @@ export function MindMapApp({
       return;
     }
 
-    // Quick Filter focus (/)
     if (event.key === '/' && !modKey && !event.altKey) {
       event.preventDefault();
       filterInputRef.current?.focus();
@@ -740,7 +845,30 @@ export function MindMapApp({
     // TODO: [M2-c 枝コピペ・ノート編集] - Cmd/Ctrl+C/X/V 枝コピペと Cmd/Ctrl+Shift+T トピックノート直接編集（下書き保護付き）を接続する
   };
 
-  // Fail-closed blocked screen
+  const handleToggleStyles = useCallback(() => {
+    setStylesOpen((prev) => {
+      const next = !prev;
+      if (next) setPopoverOpen(false);
+      return next;
+    });
+  }, []);
+
+  const handleCloseStyles = useCallback(() => {
+    setStylesOpen(false);
+  }, []);
+
+  const handleTogglePopover = useCallback(() => {
+    setPopoverOpen((prev) => {
+      const next = !prev;
+      if (next) setStylesOpen(false);
+      return next;
+    });
+  }, []);
+
+  const handleClosePopover = useCallback(() => {
+    setPopoverOpen(false);
+  }, []);
+
   if (parseResult.status === 'blocked') {
     return (
       <div className={`ito-root ito-theme-${themeMode}`}>
@@ -761,6 +889,7 @@ export function MindMapApp({
 
   const selectedNode =
     effectiveSelectedId !== null ? (doc.nodes.get(effectiveSelectedId) ?? null) : null;
+  const zoomPercent = Math.round(camera.zoom * 100);
 
   return (
     <div
@@ -771,11 +900,15 @@ export function MindMapApp({
     >
       <Toolbar
         messages={messages}
-        zoomPercent={Math.round(camera.zoom * 100)}
+        zoomPercent={zoomPercent}
         focusMode={focusMode}
         filterQuery={filterQuery}
+        structuredFilter={structuredFilter}
+        availableTags={availableTags}
         filterInputRef={filterInputRef}
         popoverOpen={popoverOpen}
+        stylesOpen={stylesOpen}
+        canEditStyles={onUpdateSettings !== undefined}
         onZoomOut={() => handleZoomBy(0.85)}
         onZoomReset={handleZoomReset}
         onZoomIn={() => handleZoomBy(1.15)}
@@ -783,7 +916,9 @@ export function MindMapApp({
         onCycleFocus={handleCycleFocus}
         onApplyDepth={handleApplyDepth}
         onFilterChange={handleFilterChange}
-        onTogglePopover={() => setPopoverOpen((prev) => !prev)}
+        onStructuredFilterChange={handleStructuredFilterChange}
+        onTogglePopover={handleTogglePopover}
+        onToggleStyles={handleToggleStyles}
         onOpenMarkdown={() => onOpenMarkdown(selectedNode?.headerLine)}
       />
 
@@ -794,21 +929,25 @@ export function MindMapApp({
           camera={camera}
           selectedId={effectiveSelectedId}
           editingSession={effectiveEditingSession}
-          imeGuardWindowMs={imeGuardWindowMs}
+          imeGuardWindowMs={settings.imeGuardWindowMs}
           inlineEditorLabel={messages.edit.inlineEditorLabel}
           toggleTaskAriaLabel={messages.edit.toggleTaskAriaLabel}
           canEdit={onDispatchCommand !== undefined}
           dimmedNodeIds={visibility.dimmedNodeIds}
           matchedNodeIds={visibility.matchedNodeIds}
           effectiveCollapsedIds={visibility.effectiveCollapsedIds}
+          numberingLabels={numberingLabels}
           palette={palette}
-          rainbowBranches={rainbowBranches}
+          rainbowBranches={settings.rainbowBranches}
+          colorStyle={settings.colorStyle}
+          canvasPattern={settings.canvasPattern}
           onCameraChange={setCamera}
           onViewportResize={handleViewportResize}
           onSelectNode={(id) => {
             setSelectedId(id);
             if (id === null) {
               setPopoverOpen(false);
+              setStylesOpen(false);
               setEditingSession(null);
             }
           }}
@@ -816,6 +955,7 @@ export function MindMapApp({
           onOpenPopover={(id) => {
             setSelectedId(id);
             setPopoverOpen(true);
+            setStylesOpen(false);
           }}
           onOpenLink={onOpenLink}
           onStartEdit={handleStartEdit}
@@ -832,20 +972,36 @@ export function MindMapApp({
             node={selectedNode}
             messages={messages}
             isReadOnly={doc.readOnlyReasons.length > 0}
-            onClose={() => setPopoverOpen(false)}
+            onClose={handleClosePopover}
             onJumpToSource={(line) => onOpenMarkdown(line)}
             onOpenLink={onOpenLink}
           />
         )}
-      </div>
 
-      <StatusBar
-        document={doc}
-        messages={messages}
-        canEdit={onDispatchCommand !== undefined}
-        filterActive={visibility.filterActive}
-        matchCount={visibility.matchedNodeIds.size}
-      />
+        {stylesOpen && onUpdateSettings && (
+          <QuickStylePopover
+            settings={settings}
+            messages={messages}
+            onUpdateSettings={onUpdateSettings}
+            onClose={handleCloseStyles}
+          />
+        )}
+
+        <StatusBar
+          document={doc}
+          wordCount={textStats.wordCount}
+          zoomPercent={zoomPercent}
+          focusMode={focusMode}
+          stylesOpen={stylesOpen}
+          messages={messages}
+          canEdit={onDispatchCommand !== undefined}
+          filterActive={visibility.filterActive}
+          matchCount={visibility.matchedNodeIds.size}
+          onZoomReset={handleZoomReset}
+          onCycleFocus={handleCycleFocus}
+          onToggleStyles={handleToggleStyles}
+        />
+      </div>
     </div>
   );
 }

@@ -112,7 +112,13 @@ export type ParseResult =
       readonly document: MindMapDocument;
     };
 
-export type BranchSide = 'center' | 'right' | 'left';
+export type BranchSide = 'center' | 'right' | 'left' | 'down';
+
+export type MapLayoutMode = 'balanced' | 'right' | 'org-chart';
+export type ColorStyleMode = 'pastel-fill' | 'wireframe' | 'monochrome';
+export type BranchEdgeStyle = 'tapered' | 'curved' | 'orthogonal';
+export type CanvasPattern = 'none' | 'dots' | 'grid';
+export type TopicNumberingMode = 'off' | 'decimal' | 'alpha';
 
 export interface LayoutNode {
   readonly id: string;
@@ -131,6 +137,8 @@ export interface LayoutEdge {
   readonly side: BranchSide;
   readonly pathD: string;
   readonly colorIndex: number;
+  /** 'fill' for closed tapered SVG ribbons; 'stroke' for uniform curved/orthogonal connectors. */
+  readonly renderMode: 'stroke' | 'fill';
 }
 
 export interface LayoutBounds {
@@ -151,6 +159,15 @@ export type FocusMode =
   | { readonly kind: 'fixed'; readonly anchorId: string }
   | { readonly kind: 'follow' };
 
+export interface StructuredFilterCriteria {
+  readonly hasNote?: boolean;
+  readonly hasOpenTask?: boolean;
+  readonly hasCompletedTask?: boolean;
+  readonly hasLink?: boolean;
+  readonly hasUnmapped?: boolean;
+  readonly tag?: string;
+}
+
 export interface QuickFilterState {
   readonly query: string;
   readonly matchedIds: ReadonlySet<string>;
@@ -169,6 +186,11 @@ export interface PluginSettings {
   readonly rainbowBranches: boolean;
   readonly imeGuardWindowMs: number;
   readonly defaultOpenMode: 'split' | 'new-tab';
+  readonly layoutMode: MapLayoutMode;
+  readonly colorStyle: ColorStyleMode;
+  readonly edgeStyle: BranchEdgeStyle;
+  readonly canvasPattern: CanvasPattern;
+  readonly topicNumbering: TopicNumberingMode;
 }
 
 export interface DraftEntry {
@@ -193,6 +215,11 @@ export const DEFAULT_PLUGIN_SETTINGS: PluginSettings = {
   rainbowBranches: true,
   imeGuardWindowMs: 300,
   defaultOpenMode: 'split',
+  layoutMode: 'balanced',
+  colorStyle: 'pastel-fill',
+  edgeStyle: 'tapered',
+  canvasPattern: 'none',
+  topicNumbering: 'off',
 };
 
 export const DEFAULT_PLUGIN_DATA: PluginDataV1 = {

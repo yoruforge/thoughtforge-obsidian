@@ -13,6 +13,8 @@ import {
 import type { MapThemePalette } from '../core/layout/theme';
 import type {
   CameraState,
+  CanvasPattern,
+  ColorStyleMode,
   LayoutResult,
   MindMapDocument,
   TopicLink,
@@ -40,8 +42,11 @@ export interface ViewportCanvasProps {
   readonly dimmedNodeIds: ReadonlySet<string>;
   readonly matchedNodeIds: ReadonlySet<string>;
   readonly effectiveCollapsedIds: ReadonlySet<string>;
+  readonly numberingLabels: ReadonlyMap<string, string>;
   readonly palette: MapThemePalette;
   readonly rainbowBranches: boolean;
+  readonly colorStyle: ColorStyleMode;
+  readonly canvasPattern: CanvasPattern;
   readonly onCameraChange: (next: CameraState) => void;
   readonly onViewportResize: (size: ViewportSize) => void;
   readonly onSelectNode: (nodeId: string | null) => void;
@@ -57,7 +62,7 @@ export interface ViewportCanvasProps {
   readonly onToggleTask: (nodeId: string) => void;
 }
 
-const MIN_ZOOM = 0.2;
+const MIN_ZOOM = 0.15;
 const MAX_ZOOM = 2.5;
 
 export function clampZoom(zoom: number): number {
@@ -77,8 +82,11 @@ export function ViewportCanvas({
   dimmedNodeIds,
   matchedNodeIds,
   effectiveCollapsedIds,
+  numberingLabels,
   palette,
   rainbowBranches,
+  colorStyle,
+  canvasPattern,
   onCameraChange,
   onViewportResize,
   onSelectNode,
@@ -201,10 +209,15 @@ export function ViewportCanvas({
     dragStateRef.current = null;
   };
 
+  const canvasClassName = [
+    'ito-canvas-viewport',
+    `ito-canvas-pattern-${canvasPattern}`,
+  ].join(' ');
+
   return (
     <div
       ref={containerRef}
-      className="ito-canvas-viewport"
+      className={canvasClassName}
       style={{ backgroundColor: palette.canvasBg }}
       onPointerDown={handlePointerDown}
       onPointerMove={handlePointerMove}
@@ -223,6 +236,7 @@ export function ViewportCanvas({
           dimmedNodeIds={dimmedNodeIds}
           palette={palette}
           rainbowBranches={rainbowBranches}
+          colorStyle={colorStyle}
         />
         <DomNodeLayer
           document={document}
@@ -236,8 +250,10 @@ export function ViewportCanvas({
           dimmedNodeIds={dimmedNodeIds}
           matchedNodeIds={matchedNodeIds}
           effectiveCollapsedIds={effectiveCollapsedIds}
+          numberingLabels={numberingLabels}
           palette={palette}
           rainbowBranches={rainbowBranches}
+          colorStyle={colorStyle}
           onSelectNode={(id) => onSelectNode(id)}
           onToggleCollapse={onToggleCollapse}
           onOpenPopover={onOpenPopover}

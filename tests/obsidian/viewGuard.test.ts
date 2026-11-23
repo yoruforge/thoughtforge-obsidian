@@ -102,6 +102,22 @@ describe('viewGuard (P2-1 and P2-2 regressions)', () => {
       ),
     ).toBe(false);
 
+    // Focus inside QuickStylePopover / NodePopover / Filter popover -> ignore scope shortcuts
+    expect(
+      shouldTriggerScopeF2(
+        {},
+        {
+          targetIsEditable: false,
+          activeElementIsEditable: false,
+          targetInsidePopover: true,
+          activeElementInsidePopover: true,
+          targetInsideMap: true,
+          activeElementInsideMap: true,
+          activeElementIsBody: false,
+        },
+      ),
+    ).toBe(false);
+
     // Focus outside map (e.g. file explorer or pane header title) -> let Obsidian handle F2
     expect(
       shouldTriggerScopeF2(

@@ -103,4 +103,109 @@ describe('filterFocus', () => {
     expect(result.dimmedNodeIds.has(idA1)).toBe(false);
     expect(result.dimmedNodeIds.has(idB1)).toBe(true);
   });
+
+  it('filters by Markdown-derived structured attributes (note, tasks, link, unmapped, tags)', () => {
+    const md = [
+      '# Root',
+      '## With Note #work/urgent',
+      'Detailed paragraph note',
+      '- [ ] Open task #重要',
+      '- [x] Done task [[OtherNote]]',
+      '- With Code',
+      '  ```ts',
+      '  const x = 1;',
+      '  ```',
+    ].join('\n');
+
+    const parsed = parseMarkdownToMap(md, 'Rich');
+    expect(parsed.status).toBe('ok');
+    if (parsed.status !== 'ok') return;
+    const doc = parsed.document;
+    const findId = (needle: string): string => {
+      const found = [...doc.nodes.values()].find((n) => n.titleRaw.includes(needle));
+      if (!found) throw new Error(`Missing ${needle}`);
+      return found.id;
+    };
+
+    const noteId = findId('With Note');
+    const openTaskId = findId('Open task');
+    const doneTaskId = findId('Done task');
+    const codeId = findId('With Code');
+
+    const byNote = computeVisibilityAndEmphasis(doc, {
+      baseCollapsedIds: new Set(),
+      focusMode: { kind: 'off' },
+      selectedId: doc.rootId,
+      filterQuery: '',
+      structuredFilter: { hasNote: true },
+      userOpenedDuringFilterIds: new Set(),
+    });
+    expect(byNote.filterActive).toBe(true);
+    expect(byNote.matchedNodeIds.has(noteId)).toBe(true);
+    expect(byNote.matchedNodeIds.size).toBe(1);
+
+    const byOpenTask = computeVisibilityAndEmphasis(doc, {
+      baseCollapsedIds: new Set(),
+      focusMode: { kind: 'off' },
+      selectedId: doc.rootId,
+      filterQuery: '',
+      structuredFilter: { hasOpenTask: true },
+      userOpenedDuringFilterIds: new Set(),
+    });
+    expect([...byOpenTask.matchedNodeIds]).toEqual([openTaskId]);
+
+    const byDoneLink = computeVisibilityAndEmphasis(doc, {
+      baseCollapsedIds: new Set(),
+      focusMode: { kind: 'off' },
+      selectedId: doc.rootId,
+      filterQuery: '',
+      structuredFilter: { hasCompletedTask: true, hasLink: true },
+      userOpenedDuringFilterIds: new Set(),
+    });
+    expect([...byDoneLink.matchedNodeIds]).toEqual([doneTaskId]);
+
+    const byUnmapped = computeVisibilityAndEmphasis(doc, {
+      baseCollapsedIds: new Set(),
+      focusMode: { kind: 'off' },
+      selectedId: doc.rootId,
+      filterQuery: '',
+      structuredFilter: { hasUnmapped: true },
+      userOpenedDuringFilterIds: new Set(),
+    });
+    expect([...byUnmapped.matchedNodeIds]).toEqual([codeId]);
+
+    // Prefix tag match (#work matches #work/urgent) & Japanese tag match (#重要)
+    const byWorkTag = computeVisibilityAndEmphasis(doc, {
+      baseCollapsedIds: new Set(),
+      focusMode: { kind: 'off' },
+      selectedId: doc.rootId,
+      filterQuery: '',
+      structuredFilter: { tag: '#work' },
+      userOpenedDuringFilterIds: new Set(),
+    });
+    expect([...byWorkTag.matchedNodeIds]).toEqual([noteId]);
+
+    const byJaTag = computeVisibilityAndEmphasis(doc, {
+      baseCollapsedIds: new Set(),
+      focusMode: { kind: 'off' },
+      selectedId: doc.rootId,
+      filterQuery: '',
+      structuredFilter: { tag: '#重要' },
+      userOpenedDuringFilterIds: new Set(),
+    });
+    expect([...byJaTag.matchedNodeIds]).toEqual([openTaskId]);
+
+    // Checking both open and completed task checkboxes matches all tasks (OR within task state)
+    const byAnyTask = computeVisibilityAndEmphasis(doc, {
+      baseCollapsedIds: new Set(),
+      focusMode: { kind: 'off' },
+      selectedId: doc.rootId,
+      filterQuery: '',
+      structuredFilter: { hasOpenTask: true, hasCompletedTask: true },
+      userOpenedDuringFilterIds: new Set(),
+    });
+    expect(byAnyTask.matchedNodeIds.has(openTaskId)).toBe(true);
+    expect(byAnyTask.matchedNodeIds.has(doneTaskId)).toBe(true);
+    expect(byAnyTask.matchedNodeIds.size).toBe(2);
+  });
 });
