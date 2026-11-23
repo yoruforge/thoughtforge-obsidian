@@ -3,7 +3,7 @@
   "name": "ThoughtForge",
   "version": "0.1.0",
   "minAppVersion": "1.8.0",
-  "description": "Explore Markdown notes as mind maps with keyboard navigation, focus, and filtering.",
+  "description": "View and edit Markdown notes as mind maps with keyboard-first navigation, non-destructive minimal-diff sync, layouts, filtering, and draft protection.",
   "author": "yoruforge",
   "isDesktopOnly": true
 }
