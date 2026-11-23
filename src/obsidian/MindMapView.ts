@@ -529,6 +529,7 @@ export class MindMapView extends FileView {
     isHistoryAction: boolean,
   ): void {
     if (outcome.accepted && outcome.nextDocument !== undefined) {
+      this.plugin.getMetadataProvider().markFileUpdating(targetPath);
       this.parseResult = { status: 'ok', document: outcome.nextDocument };
       this.lastCommandFocus =
         outcome.focusNodeId !== undefined
@@ -730,6 +731,9 @@ export class MindMapView extends FileView {
         onOpenLink: (link: TopicLink, newTab: boolean) => {
           void this.handleOpenLink(link, newTab);
         },
+        onOpenVaultFile: (vaultPath: string, newTab: boolean) => {
+          void this.handleOpenVaultFile(vaultPath, newTab);
+        },
         onUpdateSettings: (patch) => {
           void this.plugin.updateSettings(patch);
         },
@@ -778,6 +782,81 @@ export class MindMapView extends FileView {
     }
   }
 
+  private async navigateToMarkdownFile(
+    sourceFile: TFile,
+    destination: TFile,
+    subpath: string | undefined,
+    newTab: boolean,
+  ): Promise<void> {
+    if (newTab) {
+      await this.plugin.openFileAsMindMap(destination, {
+        openMode: 'new-tab',
+        ...(subpath !== undefined ? { reveal: { subpath } } : {}),
+      });
+      return;
+    }
+
+    if (destination.path === sourceFile.path) {
+      if (subpath !== undefined) {
+        this.navHistory.updateCurrentAnchor(sourceFile.path, this.selectedAnchor);
+        this.navHistory.recordVisit({
+          filePath: sourceFile.path,
+          targetSubpath: subpath,
+        });
+        this.revealTarget({ subpath });
+      } else {
+        this.revealTarget({ line: 0 });
+      }
+      return;
+    }
+
+    this.isNavigating = true;
+    this.suppressNextLoadHistoryRecord = true;
+    try {
+      this.navHistory.updateCurrentAnchor(sourceFile.path, this.selectedAnchor);
+      this.navHistory.recordVisit({
+        filePath: destination.path,
+        ...(subpath !== undefined ? { targetSubpath: subpath } : {}),
+      });
+      this.pendingReveal =
+        subpath !== undefined
+          ? {
+              token: ++this.nextRevealToken,
+              filePath: destination.path,
+              subpath,
+            }
+          : null;
+      await this.leaf.setViewState({
+        type: MINDMAP_VIEW_TYPE,
+        state: { file: destination.path },
+        active: true,
+      });
+    } finally {
+      this.suppressNextLoadHistoryRecord = false;
+      this.isNavigating = false;
+    }
+  }
+
+  private async handleOpenVaultFile(vaultPath: string, newTab: boolean): Promise<void> {
+    if (this.isNavigating) return;
+    const sourceFile = this.file;
+    if (!sourceFile) return;
+
+    const destination = this.app.vault.getAbstractFileByPath(vaultPath);
+    if (!(destination instanceof TFile)) {
+      new Notice(this.plugin.messages.notices.noteNotFound);
+      return;
+    }
+
+    if (destination.extension.toLowerCase() === 'md') {
+      await this.navigateToMarkdownFile(sourceFile, destination, undefined, newTab);
+      return;
+    }
+
+    const leaf = this.app.workspace.getLeaf(newTab ? 'tab' : false);
+    await leaf.openFile(destination);
+  }
+
   private async handleOpenLink(link: TopicLink, newTab: boolean): Promise<void> {
     if (this.isNavigating) return;
     const sourceFile = this.file;
@@ -806,53 +885,7 @@ export class MindMapView extends FileView {
     }
 
     if (destination instanceof TFile && destination.extension.toLowerCase() === 'md') {
-      if (newTab) {
-        await this.plugin.openFileAsMindMap(destination, {
-          openMode: 'new-tab',
-          ...(subpath !== undefined ? { reveal: { subpath } } : {}),
-        });
-        return;
-      }
-
-      if (destination.path === sourceFile.path) {
-        if (subpath !== undefined) {
-          this.navHistory.updateCurrentAnchor(sourceFile.path, this.selectedAnchor);
-          this.navHistory.recordVisit({
-            filePath: sourceFile.path,
-            targetSubpath: subpath,
-          });
-          this.revealTarget({ subpath });
-        } else {
-          this.revealTarget({ line: 0 });
-        }
-        return;
-      }
-
-      this.isNavigating = true;
-      this.suppressNextLoadHistoryRecord = true;
-      try {
-        this.navHistory.updateCurrentAnchor(sourceFile.path, this.selectedAnchor);
-        this.navHistory.recordVisit({
-          filePath: destination.path,
-          ...(subpath !== undefined ? { targetSubpath: subpath } : {}),
-        });
-        this.pendingReveal =
-          subpath !== undefined
-            ? {
-                token: ++this.nextRevealToken,
-                filePath: destination.path,
-                subpath,
-              }
-            : null;
-        await this.leaf.setViewState({
-          type: MINDMAP_VIEW_TYPE,
-          state: { file: destination.path },
-          active: true,
-        });
-      } finally {
-        this.suppressNextLoadHistoryRecord = false;
-        this.isNavigating = false;
-      }
+      await this.navigateToMarkdownFile(sourceFile, destination, subpath, newTab);
       return;
     }
 

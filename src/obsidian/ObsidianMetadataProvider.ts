@@ -58,6 +58,10 @@ export class ObsidianMetadataProvider implements NodeMetadataProvider {
     this.version += 1;
   }
 
+  bumpVersion(): void {
+    this.version += 1;
+  }
+
   getFreshness(filePath: string, _contentHash: string): 'fresh' | 'updating' {
     if (this.updatingPaths.has(filePath)) {
       return 'updating';

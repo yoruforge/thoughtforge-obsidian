@@ -62,6 +62,7 @@ export interface NodePopoverProps {
   readonly onClose: () => void;
   readonly onJumpToSource: (line: number) => void;
   readonly onOpenLink: (link: TopicLink, newTab: boolean) => void;
+  readonly onOpenBacklink?: (sourcePath: string, newTab: boolean) => void;
 }
 
 export function NodePopover({
@@ -93,6 +94,7 @@ export function NodePopover({
   onClose,
   onJumpToSource,
   onOpenLink,
+  onOpenBacklink,
 }: NodePopoverProps) {
   const editable = canEdit && !isReadOnly && onCommitNote !== undefined;
   const [noteSession, setNoteSession] = useState<NoteEditingSession | null>(null);
@@ -685,10 +687,15 @@ export function NodePopover({
                     title={item.sourcePath}
                     onClick={(event) => {
                       if (!isSavingRef.current) {
-                        onOpenLink(
-                          { kind: 'wikilink', target: item.sourcePath, label: item.sourceTitle },
-                          event.metaKey || event.ctrlKey,
-                        );
+                        const openInNewTab = event.metaKey || event.ctrlKey;
+                        if (onOpenBacklink) {
+                          onOpenBacklink(item.sourcePath, openInNewTab);
+                        } else {
+                          onOpenLink(
+                            { kind: 'wikilink', target: item.sourcePath, label: item.sourceTitle },
+                            openInNewTab,
+                          );
+                        }
                       }
                     }}
                   >

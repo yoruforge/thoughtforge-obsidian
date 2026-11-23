@@ -153,6 +153,7 @@ export interface MindMapAppProps {
   readonly onReadBranchClipboard?: () => Promise<string | null>;
   readonly onOpenMarkdown: (line?: number) => void;
   readonly onOpenLink: (link: TopicLink, newTab: boolean) => void;
+  readonly onOpenVaultFile?: (vaultPath: string, newTab: boolean) => void;
   readonly onUpdateSettings?: (patch: Partial<PluginSettings>) => void;
   readonly onDispatchCommand?: (
     command: SemanticCommand,
@@ -214,6 +215,7 @@ export function MindMapApp({
   onReadBranchClipboard,
   onOpenMarkdown,
   onOpenLink,
+  onOpenVaultFile,
   onUpdateSettings,
   onDispatchCommand,
   onUndo,
@@ -645,8 +647,8 @@ export function MindMapApp({
     onSelectedAnchorChange(node ? buildHistoryAnchor(doc, node) : undefined);
   }, [doc, effectiveSelectedId, onSelectedAnchorChange]);
 
-  const handleOpenLinkFromMap = useCallback(
-    (link: TopicLink, newTab: boolean, sourceNodeId?: string) => {
+  const captureNavigationAnchor = useCallback(
+    (newTab: boolean, sourceNodeId?: string) => {
       if (!newTab && onSelectedAnchorChange && doc) {
         const anchorNode =
           sourceNodeId !== undefined
@@ -658,9 +660,24 @@ export function MindMapApp({
           onSelectedAnchorChange(buildHistoryAnchor(doc, anchorNode));
         }
       }
+    },
+    [doc, effectiveSelectedId, onSelectedAnchorChange],
+  );
+
+  const handleOpenLinkFromMap = useCallback(
+    (link: TopicLink, newTab: boolean, sourceNodeId?: string) => {
+      captureNavigationAnchor(newTab, sourceNodeId);
       onOpenLink(link, newTab);
     },
-    [doc, effectiveSelectedId, onSelectedAnchorChange, onOpenLink],
+    [captureNavigationAnchor, onOpenLink],
+  );
+
+  const handleOpenVaultFileFromMap = useCallback(
+    (vaultPath: string, newTab: boolean, sourceNodeId?: string) => {
+      captureNavigationAnchor(newTab, sourceNodeId);
+      onOpenVaultFile?.(vaultPath, newTab);
+    },
+    [captureNavigationAnchor, onOpenVaultFile],
   );
 
   // Process explicit reveal requests (from cursor-to-map, [[Note#Heading]] / [[Note#^blk]], or history)
@@ -2218,6 +2235,12 @@ export function MindMapApp({
             onClose={handleClosePopover}
             onJumpToSource={(line) => onOpenMarkdown(line)}
             onOpenLink={(link, newTab) => handleOpenLinkFromMap(link, newTab, selectedNode.id)}
+            onOpenBacklink={
+              onOpenVaultFile
+                ? (sourcePath, newTab) =>
+                    handleOpenVaultFileFromMap(sourcePath, newTab, selectedNode.id)
+                : undefined
+            }
           />
         )}
 

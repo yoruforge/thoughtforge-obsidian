@@ -7,6 +7,7 @@ import {
   type PluginSettings,
 } from './core/model';
 import { getMessages, type Messages } from './i18n';
+import { isSafeVaultImagePath } from './core/view/imageEmbeds';
 import { registerPluginCommands } from './obsidian/commands';
 import { MINDMAP_VIEW_TYPE, MindMapView } from './obsidian/MindMapView';
 import { ObsidianHostAdapter } from './obsidian/ObsidianHostAdapter';
@@ -218,8 +219,24 @@ export default class ThoughtForgePlugin extends Plugin {
     this.addSettingTab(new MindMapSettingTab(this.app, this));
 
     this.registerEvent(
+      this.app.vault.on('create', (abstractFile) => {
+        if (abstractFile instanceof TFile && isSafeVaultImagePath(abstractFile.path)) {
+          this.getMetadataProvider().bumpVersion();
+          this.scheduleMetadataRefresh();
+        }
+      }),
+    );
+
+    this.registerEvent(
       this.app.vault.on('modify', (abstractFile) => {
-        if (!(abstractFile instanceof TFile) || abstractFile.extension.toLowerCase() !== 'md') {
+        if (!(abstractFile instanceof TFile)) {
+          return;
+        }
+        if (abstractFile.extension.toLowerCase() !== 'md') {
+          if (isSafeVaultImagePath(abstractFile.path)) {
+            this.getMetadataProvider().bumpVersion();
+            this.scheduleMetadataRefresh();
+          }
           return;
         }
         this.getMetadataProvider().markFileUpdating(abstractFile.path);
