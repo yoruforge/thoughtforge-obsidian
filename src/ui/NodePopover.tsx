@@ -80,6 +80,7 @@ export function NodePopover({
   const lastStartTokenRef = useRef(0);
 
   const cancelNoteEditExplicitly = useCallback(() => {
+    if (isSavingRef.current) return;
     noteSessionRef.current = null;
     setNoteSession(null);
   }, []);
@@ -91,6 +92,7 @@ export function NodePopover({
       const pendingSession = noteSessionRef.current;
       const pendingText = draftTextRef.current;
       if (
+        !isSavingRef.current &&
         pendingSession !== null &&
         pendingText.trim().length > 0 &&
         pendingText !== pendingSession.initialNoteText
@@ -117,7 +119,7 @@ export function NodePopover({
 
   const beginNoteEdit = useCallback(
     (prefill?: string, restoredDraftId?: string) => {
-      if (!editable) return;
+      if (!editable || isSavingRef.current) return;
       const session = createNoteEditingSession(filePath, doc, node, restoredDraftId);
       setNoteSession(session);
       setDraftText(prefill !== undefined ? prefill : (node.noteText ?? ''));
@@ -275,7 +277,10 @@ export function NodePopover({
           type="button"
           className="ito-btn ito-btn-icon"
           aria-label={messages.popover.close}
-          onClick={onClose}
+          disabled={isSaving}
+          onClick={() => {
+            if (!isSavingRef.current) onClose();
+          }}
         >
           ×
         </button>
@@ -338,6 +343,11 @@ export function NodePopover({
           <p className="ito-draft-banner-hint">{messages.popover.draftAmbiguousHint}</p>
           {ambiguousDrafts.map((draft) => {
             const contextParts: string[] = [];
+            if (draft.targetTitleRaw.length > 0) {
+              contextParts.push(
+                `${messages.popover.draftSavedContextTopic}: ${draft.targetTitleRaw}`,
+              );
+            }
             if (draft.targetHeaderLine !== undefined) {
               contextParts.push(
                 `${messages.popover.draftSavedContextLine} ${draft.targetHeaderLine + 1}`,

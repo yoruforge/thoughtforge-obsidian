@@ -115,6 +115,7 @@ export const en = {
     draftRestoreButton: 'Restore',
     draftRestoreHereButton: 'Restore here',
     draftDiscardButton: 'Discard',
+    draftSavedContextTopic: 'Original topic',
     draftSavedContextLine: 'Saved line',
     draftSavedContextParent: 'Path',
     unmappedHeading: 'Preserved non-map blocks',

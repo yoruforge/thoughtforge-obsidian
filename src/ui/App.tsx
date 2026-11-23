@@ -1461,12 +1461,9 @@ export function MindMapApp({
               return res?.status === 'matched' && res.nodeId === selectedNode.id;
             })}
             ambiguousDrafts={drafts.filter((d) => {
-              const res = draftResolutions.get(d.draftId);
-              if (!res) return false;
-              if (res.status === 'ambiguous') {
-                return res.candidateNodeIds.includes(selectedNode.id);
-              }
-              return res.status === 'unmatched';
+              // A renamed topic can be the intended manual target even if its old title still exists.
+              const status = draftResolutions.get(d.draftId)?.status;
+              return status === 'ambiguous' || status === 'unmatched';
             })}
             noteCommitTriggerRef={noteCommitTriggerRef}
             onCommitNote={handleCommitNote}

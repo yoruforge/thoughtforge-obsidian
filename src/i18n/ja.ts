@@ -117,6 +117,7 @@ export const ja: Messages = {
     draftRestoreButton: '復元',
     draftRestoreHereButton: 'ここへ復元',
     draftDiscardButton: '破棄',
+    draftSavedContextTopic: '元のトピック',
     draftSavedContextLine: '保存時: 行',
     draftSavedContextParent: '親パス',
     unmappedHeading: '保護中の未対応ブロック',
