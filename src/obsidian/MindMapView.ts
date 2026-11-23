@@ -302,10 +302,20 @@ export class MindMapView extends FileView {
     this.renderApp();
   }
 
-  private async dispatchCommand(command: SemanticCommand): Promise<CommandDispatchOutcome> {
+  private async dispatchCommand(
+    command: SemanticCommand,
+    expectedFilePath?: string,
+  ): Promise<CommandDispatchOutcome> {
     const file = this.file;
     if (!file) {
       return { accepted: false, rejectCode: 'io-error', reason: 'No active file.' };
+    }
+    if (expectedFilePath !== undefined && file.path !== expectedFilePath) {
+      return {
+        accepted: false,
+        rejectCode: 'stale-target',
+        reason: 'Active file changed before command dispatch.',
+      };
     }
 
     const targetPath = file.path;
@@ -338,7 +348,7 @@ export class MindMapView extends FileView {
       if (isStaleAsyncViewUpdate(targetPath, seq, this.file?.path, this.loadSequence)) {
         return { accepted: false, rejectCode: 'stale-target', reason: 'View changed during confirmation.' };
       }
-      return this.dispatchCommand({ ...command, confirmedUnmapped: true });
+      return this.dispatchCommand({ ...command, confirmedUnmapped: true }, targetPath);
     }
 
     this.applyOutcomeToView(file, targetPath, targetBasename, outcome, false);
@@ -526,7 +536,8 @@ export class MindMapView extends FileView {
         onUpdateSettings: (patch) => {
           void this.plugin.updateSettings(patch);
         },
-        onDispatchCommand: (command: SemanticCommand) => this.dispatchCommand(command),
+        onDispatchCommand: (command: SemanticCommand, expectedFilePath?: string) =>
+          this.dispatchCommand(command, expectedFilePath),
         onUndo: () => this.dispatchHistory('undo'),
         onRedo: () => this.dispatchHistory('redo'),
         onRegisterActionTriggers: this.registerActionTriggers,

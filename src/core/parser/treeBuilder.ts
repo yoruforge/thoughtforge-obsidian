@@ -469,11 +469,29 @@ export function buildMindMapDocument(
     }
 
     // Paragraph line: decide whether it belongs to the active topic's note or is trailing unmapped content.
-    if (listStack.length > 0 && item.indentColumns === 0) {
-      // Unindented paragraph after a blank line closes the active list.
+    if (listStack.length > 0) {
       const prevLineKind = item.line > 0 ? lineKinds[item.line - 1] : null;
       if (prevLineKind === 'blank') {
-        resetListGroup();
+        if (item.indentColumns === 0) {
+          // Unindented paragraph after a blank line closes the active list.
+          resetListGroup();
+        } else {
+          // Unwind list items whose content column is deeper than the paragraph's indentation
+          // so a dedented paragraph attaches to its outer list item instead of a nested child.
+          while (listStack.length > 0) {
+            const top = listStack[listStack.length - 1];
+            if (!top) break;
+            if (item.indentColumns < top.contentColumns) {
+              listStack.pop();
+            } else {
+              break;
+            }
+          }
+          if (listStack.length === 0) {
+            listGroupSawTabs = false;
+            listGroupSawSpaces = false;
+          }
+        }
       }
     }
 

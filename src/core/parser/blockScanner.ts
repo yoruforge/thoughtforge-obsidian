@@ -60,7 +60,16 @@ const BLOCKQUOTE_RE = /^[ \t]*>/;
 const FOOTNOTE_DEF_RE = /^[ \t]{0,3}\[\^[^\]]+\]:/;
 const LINK_REF_DEF_RE = /^[ \t]{0,3}\[[^[\]^][^\]]*\]:[ \t]*\S+/;
 const HTML_BLOCK_START_RE =
-  /^[ \t]{0,3}<(?:!--|!DOCTYPE|\?|\/?(?:address|article|aside|base|basefont|blockquote|body|caption|center|col|colgroup|dd|details|dialog|dir|div|dl|dt|fieldset|figcaption|figure|footer|form|frame|frameset|h[1-6]|head|header|hr|html|iframe|legend|li|link|main|menu|menuitem|nav|noframes|ol|optgroup|option|p|param|pre|script|search|section|style|summary|table|tbody|td|tfoot|th|thead|title|tr|track|ul)(?:\s|>|\/|$))/i;
+  /^[ \t]{0,3}<(?:!--|!DOCTYPE|!\[CDATA\[|\?|\/?(?:address|article|aside|base|basefont|blockquote|body|caption|center|col|colgroup|dd|details|dialog|dir|div|dl|dt|fieldset|figcaption|figure|footer|form|frame|frameset|h[1-6]|head|header|hr|html|iframe|legend|li|link|main|menu|menuitem|nav|noframes|ol|optgroup|option|p|param|pre|script|search|section|style|summary|table|tbody|td|tfoot|th|thead|title|tr|track|ul)(?:\s|>|\/|$))/i;
+
+function getHtmlClosingDelimiter(line: string): string | null {
+  const trimmed = line.trimStart();
+  if (trimmed.startsWith('<!--')) return '-->';
+  if (trimmed.startsWith('<?')) return '?>';
+  if (trimmed.startsWith('<![CDATA[')) return ']]>';
+  if (/^<![A-Z]/i.test(trimmed)) return '>';
+  return null;
+}
 const TABLE_SEP_RE = /^[ \t]*\|?[ \t]*:?-{3,}:?[ \t]*(?:\|[ \t]*:?-{3,}:?[ \t]*)+\|?[ \t]*$/;
 const TABLE_SINGLE_COL_SEP_RE = /^[ \t]*\|[ \t]*:?-{3,}:?[ \t]*\|[ \t]*$/;
 const YAML_KEY_LINE_RE = /^[ \t]*[^:#\s][^:]*:[ \t]*(?:.*)?$/;
@@ -403,13 +412,32 @@ export function scanBlocks(lines: readonly string[]): BlockScanResult {
         insideListContext = false;
       }
       const startLine = i;
-      i += 1;
-      while (i < lines.length) {
-        const nextLine = lines[i];
-        if (nextLine === undefined || isBlank(nextLine)) {
-          break;
+      const closingDelimiter = getHtmlClosingDelimiter(line);
+      if (closingDelimiter !== null) {
+        // CommonMark delimiter-terminated HTML blocks (comments, PI, declarations, CDATA)
+        // end on the first line containing their closing delimiter, including the opening line.
+        if (line.includes(closingDelimiter)) {
+          i += 1;
+        } else {
+          i += 1;
+          while (i < lines.length) {
+            const nextLine = lines[i];
+            if (nextLine === undefined) break;
+            i += 1;
+            if (nextLine.includes(closingDelimiter)) {
+              break;
+            }
+          }
         }
+      } else {
         i += 1;
+        while (i < lines.length) {
+          const nextLine = lines[i];
+          if (nextLine === undefined || isBlank(nextLine)) {
+            break;
+          }
+          i += 1;
+        }
       }
       items.push({
         kind: 'unmapped',
