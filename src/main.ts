@@ -154,9 +154,18 @@ export default class ThoughtForgePlugin extends Plugin {
           ...this.pluginData,
           drafts: nextDrafts,
         };
+        let persisted = false;
         if (this.dataWritable) {
-          await this.saveData(this.pluginData);
+          try {
+            await this.saveData(this.pluginData);
+            persisted = true;
+          } catch {
+            persisted = false;
+          }
         }
+        return persisted;
+      });
+      this.draftStore.subscribe(() => {
         this.refreshAllViews();
       });
     }

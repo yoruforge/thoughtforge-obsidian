@@ -116,7 +116,9 @@ export const ja: Messages = {
     draftFieldNote: 'ノート下書き',
     draftRestoreButton: '復元',
     draftRestoreHereButton: 'ここへ復元',
+    draftCopyButton: 'コピー',
     draftDiscardButton: '破棄',
+    draftUnpersistedBadge: 'メモリ上のみ（再起動で消失）',
     draftSavedContextTopic: '元のトピック',
     draftSavedContextLine: '保存時: 行',
     draftSavedContextParent: '親パス',
@@ -185,8 +187,11 @@ export const ja: Messages = {
     editorUnknown: 'Markdown エディタの保存状態を確認できませんでした。ノートを保存してから再試行してください。',
     invariantRejected: 'Markdown 構造や保護ブロックの破損を防ぐため、編集を中止しました。',
     invalidNoteBlockSyntax:
-      'トピックノートには通常段落のみ入力できます（見出し・箇条書き・コード・引用・表・HTML等は Markdown 側で編集してください）。入力内容は下書きに退避しました。',
+      'トピックノートには通常段落のみ入力できます（見出し・箇条書き・コード・引用・表・HTML等は Markdown 側で編集してください）。',
     draftSavedNotice: '書き戻しが拒否されたため、入力中の内容を下書きとして安全に退避しました。',
+    draftPersistFailedNotice:
+      '下書きを data.json へ永続化できませんでした（保護中または書込失敗・再起動で消失します）。内容をコピーして退避するか再試行してください: ',
+    draftCopiedNotice: '下書きの内容をクリップボードへコピーしました。',
     branchCopiedNotice: '選択中の枝をコピーしました。',
     branchCutNotice: '選択中の枝をカットしました。',
     clipboardEmptyNotice: '貼り付ける枝がありません。先に枝をコピーしてください。',

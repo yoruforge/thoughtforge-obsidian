@@ -16,12 +16,13 @@ describe('DraftStore (M2-c field:title|note persistence & fail-closed resolution
       [],
       async (drafts) => {
         persistedSnapshots.push([...drafts]);
+        return true;
       },
       'dev-test',
     );
 
     // Save a note draft
-    const d1 = await store.saveDraft({
+    const { entry: d1, persisted: d1Persisted } = await store.saveDraft({
       filePath: 'notes/a.md',
       field: 'note',
       targetTitleRaw: 'Topic A',
@@ -32,12 +33,13 @@ describe('DraftStore (M2-c field:title|note persistence & fail-closed resolution
       baseContentHash: 'hash1',
       text: 'Unsaved paragraph 1',
     });
+    expect(d1Persisted).toBe(true);
     expect(d1.field).toBe('note');
     expect(d1.deviceId).toBe('dev-test');
     expect(store.listDraftsForFile('notes/a.md')).toHaveLength(1);
 
     // Upsert same (filePath, field, targetTitleRaw, ancestorPath, ownRangeHash, headerLine) updates text
-    const d1Updated = await store.saveDraft({
+    const { entry: d1Updated } = await store.saveDraft({
       filePath: 'notes/a.md',
       field: 'note',
       targetTitleRaw: 'Topic A',
@@ -55,7 +57,7 @@ describe('DraftStore (M2-c field:title|note persistence & fail-closed resolution
     );
 
     // Separate field:'title' draft on same topic coexists cleanly
-    const dTitle = await store.saveDraft({
+    const { entry: dTitle } = await store.saveDraft({
       filePath: 'notes/a.md',
       field: 'title',
       targetTitleRaw: 'Topic A',
@@ -85,7 +87,7 @@ describe('DraftStore (M2-c field:title|note persistence & fail-closed resolution
   });
 
   it('caps stored drafts at 50 entries and truncates oversized text at 64 KB', async () => {
-    const store = new DraftStore([], async () => undefined, 'dev-cap');
+    const store = new DraftStore([], async () => true, 'dev-cap');
     for (let i = 0; i < 55; i += 1) {
       await store.saveDraft({
         filePath: 'notes/many.md',
@@ -98,7 +100,7 @@ describe('DraftStore (M2-c field:title|note persistence & fail-closed resolution
     expect(store.getAllDrafts().length).toBe(50);
 
     const huge = 'x'.repeat(70 * 1024);
-    const saved = await store.saveDraft({
+    const { entry: saved } = await store.saveDraft({
       filePath: 'notes/huge.md',
       field: 'note',
       targetTitleRaw: 'Big',
@@ -130,8 +132,8 @@ describe('DraftStore (M2-c field:title|note persistence & fail-closed resolution
     expect(memoA0.headerLine).toBe(2);
     expect(memoB0.headerLine).toBe(5);
 
-    const store = new DraftStore([], async () => undefined, 'dev-p1');
-    const draftB = await store.saveDraft({
+    const store = new DraftStore([], async () => true, 'dev-p1');
+    const { entry: draftB } = await store.saveDraft({
       filePath: 'notes/p1.md',
       field: 'note',
       targetTitleRaw: memoB0.titleRaw,
@@ -298,8 +300,8 @@ describe('DraftStore (M2-c field:title|note persistence & fail-closed resolution
     if (!memo1Before || !memo2Before) throw new Error('missing memos');
     expect(hasIdenticalStructuralSibling(parsedBefore.document, memo2Before)).toBe(false);
 
-    const store = new DraftStore([], async () => undefined, 'dev-same-parent');
-    const draft2 = await store.saveDraft({
+    const store = new DraftStore([], async () => true, 'dev-same-parent');
+    const { entry: draft2 } = await store.saveDraft({
       filePath: 'notes/same-parent.md',
       field: 'note',
       targetTitleRaw: memo2Before.titleRaw,
@@ -410,7 +412,7 @@ describe('DraftStore (M2-c field:title|note persistence & fail-closed resolution
     if (!emptySecond) throw new Error('missing emptySecond');
     expect(hasIdenticalStructuralSibling(parsedEmptyBefore.document, emptySecond)).toBe(true);
 
-    const emptyDraft = await store.saveDraft({
+    const { entry: emptyDraft } = await store.saveDraft({
       filePath: 'notes/empty-twins.md',
       field: 'note',
       targetTitleRaw: emptySecond.titleRaw,
@@ -553,10 +555,10 @@ describe('DraftStore (M2-c field:title|note persistence & fail-closed resolution
     expect(resolveDraftNodeId(parsedAfter.document, legacyPr6Draft)).toBeNull();
 
     // 3. Verify DraftStore upsert & deleteMatchingDraft also protect the PR #6 draft across changed doc!
-    const store = new DraftStore([legacyPr6Draft], async () => undefined, 'dev-pr7');
+    const store = new DraftStore([legacyPr6Draft], async () => true, 'dev-pr7');
 
     // Saving a new draft on surviving 1st "メモ" (even on shifted line 4!) must NOT overwrite PR #6 draft
-    const firstNewDraft = await store.saveDraft({
+    const { entry: firstNewDraft } = await store.saveDraft({
       filePath: 'notes/pr6-upgrade.md',
       field: 'note',
       targetTitleRaw: survivingFirst.titleRaw,
@@ -601,5 +603,62 @@ describe('DraftStore (M2-c field:title|note persistence & fail-closed resolution
     expect(store.listDraftsForFile('notes/pr6-upgrade.md')[0]?.draftId).toBe(
       legacyPr6Draft.draftId,
     );
+  });
+
+  it('reports persisted=false and marks drafts unpersisted when storage is unwritable or throws', async () => {
+    let allowWrite = false;
+    const store = new DraftStore(
+      [],
+      async () => {
+        if (!allowWrite) return false;
+        return true;
+      },
+      'dev-unwritable',
+    );
+
+    const res1 = await store.saveDraft({
+      filePath: 'notes/ro-data.md',
+      field: 'title',
+      targetTitleRaw: 'Item',
+      targetHeaderLine: 1,
+      targetOwnRangeHash: 'h1',
+      targetAncestorPath: ['Root'],
+      targetHadIdenticalSibling: false,
+      baseContentHash: 'doc1',
+      text: '# invalid title',
+    });
+    expect(res1.persisted).toBe(false);
+    expect(store.isDraftPersisted(res1.entry.draftId)).toBe(false);
+    expect(store.getUnpersistedDraftIds().has(res1.entry.draftId)).toBe(true);
+
+    // Throwing persist handler also fails closed with persisted=false
+    const throwingStore = new DraftStore(
+      [],
+      async () => {
+        throw new Error('disk full');
+      },
+      'dev-throw',
+    );
+    const resThrow = await throwingStore.saveDraft({
+      filePath: 'notes/ro-data.md',
+      field: 'note',
+      targetTitleRaw: 'Item',
+      baseContentHash: 'doc1',
+      text: 'unsaved note',
+    });
+    expect(resThrow.persisted).toBe(false);
+    expect(throwingStore.isDraftPersisted(resThrow.entry.draftId)).toBe(false);
+
+    // Once storage becomes writable again, a subsequent persist clears unpersisted markers
+    allowWrite = true;
+    const res2 = await store.saveDraft({
+      filePath: 'notes/ro-data.md',
+      field: 'note',
+      targetTitleRaw: 'Item',
+      baseContentHash: 'doc1',
+      text: 'now persisted',
+    });
+    expect(res2.persisted).toBe(true);
+    expect(store.getUnpersistedDraftIds().size).toBe(0);
   });
 });

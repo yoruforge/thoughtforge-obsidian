@@ -734,6 +734,20 @@
   color: #fbbf24;
 }
 
+.ito-draft-unpersisted-badge {
+  font-size: 10px;
+  font-weight: 700;
+  padding: 1px 6px;
+  border-radius: 999px;
+  background: rgba(220, 38, 38, 0.16);
+  color: #b91c1c;
+  flex-shrink: 0;
+}
+
+.ito-theme-dark-solarized .ito-draft-unpersisted-badge {
+  color: #f87171;
+}
+
 .ito-draft-preview-text {
   font-size: 11px;
   color: var(--text-normal);

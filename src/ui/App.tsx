@@ -34,15 +34,15 @@ import {
   computeTopicNumbering,
 } from '../core/view/topicPresentation';
 import {
-  remapFocusMode,
-  remapNodeIdAcrossDocuments,
-  remapNodeIdSet,
+  createDocumentRemapIndex,
+  type DocumentRemapIndex,
 } from '../core/view/viewStateRemap';
 import type { Messages } from '../i18n';
 import {
   resolveDraftTarget,
   type DraftResolution,
   type SaveDraftInput,
+  type SaveDraftResult,
 } from '../sync/DraftStore';
 import type { CommandDispatchOutcome } from '../sync/ports';
 import {
@@ -89,7 +89,8 @@ export interface MindMapAppProps {
   readonly settings: PluginSettings;
   readonly messages: Messages;
   readonly drafts?: readonly DraftEntry[];
-  readonly onSaveDraft?: (input: SaveDraftInput) => Promise<DraftEntry>;
+  readonly unpersistedDraftIds?: ReadonlySet<string>;
+  readonly onSaveDraft?: (input: SaveDraftInput) => Promise<SaveDraftResult>;
   readonly onDeleteDraft?: (draftId: string) => Promise<void>;
   readonly onDeleteMatchingDraft?: (
     filePath: string,
@@ -139,6 +140,7 @@ export function MindMapApp({
   settings,
   messages,
   drafts = [],
+  unpersistedDraftIds,
   onSaveDraft,
   onDeleteDraft,
   onDeleteMatchingDraft,
@@ -157,7 +159,17 @@ export function MindMapApp({
 
   const doc = parseResult.status === 'ok' ? parseResult.document : null;
 
-  const [selectedId, setSelectedId] = useState<string | null>(doc?.rootId ?? null);
+  const [selectionState, setSelectionState] = useState<{
+    readonly filePath: string;
+    readonly doc: MindMapDocument | null;
+    readonly nodeId: string | null;
+    readonly unresolved: boolean;
+  }>(() => ({
+    filePath,
+    doc,
+    nodeId: doc?.rootId ?? null,
+    unresolved: false,
+  }));
   const [editingSession, setEditingSession] = useState<EditingSession | null>(null);
   const [baseCollapsedIds, setBaseCollapsedIds] = useState<ReadonlySet<string>>(() => new Set());
   const [userOpenedDuringFilterIds, setUserOpenedDuringFilterIds] = useState<ReadonlySet<string>>(
@@ -188,6 +200,32 @@ export function MindMapApp({
   const prevDocStateRef = useRef<{ readonly filePath: string; readonly doc: MindMapDocument } | null>(
     doc ? { filePath, doc } : null,
   );
+  const lastRemapIndexRef = useRef<DocumentRemapIndex | null>(null);
+
+  const getRemapIndex = useCallback(
+    (beforeDoc: MindMapDocument, afterDoc: MindMapDocument): DocumentRemapIndex => {
+      const cached = lastRemapIndexRef.current;
+      if (cached && cached.beforeDoc === beforeDoc && cached.afterDoc === afterDoc) {
+        return cached;
+      }
+      const created = createDocumentRemapIndex(beforeDoc, afterDoc);
+      lastRemapIndexRef.current = created;
+      return created;
+    },
+    [],
+  );
+
+  const selectNode = useCallback(
+    (nodeId: string | null, targetDoc?: MindMapDocument | null, targetFilePath?: string): void => {
+      setSelectionState({
+        filePath: targetFilePath ?? filePathRef.current,
+        doc: targetDoc !== undefined ? targetDoc : docRef.current,
+        nodeId,
+        unresolved: false,
+      });
+    },
+    [],
+  );
 
   const syncViewStateForNextDoc = useCallback(
     (
@@ -195,19 +233,22 @@ export function MindMapApp({
       nextDoc: MindMapDocument,
       expandNodeId?: string,
       expandBeforeNodeId?: string,
+      explicitSelectedNodeId?: string,
     ): void => {
       const prev = prevDocStateRef.current;
       prevDocStateRef.current = { filePath: nextFilePath, doc: nextDoc };
 
       if (prev !== null && prev.filePath === nextFilePath && prev.doc !== nextDoc) {
+        // Build O(N) lookup table ONCE and share across collapsed sets, fixed focus, and selection.
+        const remapIndex = getRemapIndex(prev.doc, nextDoc);
         const resolvedExpandId =
           expandNodeId ??
           (expandBeforeNodeId !== undefined
-            ? (remapNodeIdAcrossDocuments(prev.doc, nextDoc, expandBeforeNodeId) ?? undefined)
+            ? (remapIndex.remapNodeId(expandBeforeNodeId) ?? undefined)
             : undefined);
 
         setBaseCollapsedIds((prevIds) => {
-          const remapped = remapNodeIdSet(prev.doc, nextDoc, prevIds);
+          const remapped = remapIndex.remapNodeIdSet(prevIds);
           if (resolvedExpandId !== undefined && remapped.has(resolvedExpandId)) {
             const next = new Set(remapped);
             next.delete(resolvedExpandId);
@@ -215,11 +256,63 @@ export function MindMapApp({
           }
           return remapped;
         });
-        setUserOpenedDuringFilterIds((prevIds) => remapNodeIdSet(prev.doc, nextDoc, prevIds));
-        setFocusMode((prevMode) => remapFocusMode(prev.doc, nextDoc, prevMode));
+        setUserOpenedDuringFilterIds((prevIds) => remapIndex.remapNodeIdSet(prevIds));
+        setFocusMode((prevMode) => remapIndex.remapFocusMode(prevMode));
+
+        if (explicitSelectedNodeId !== undefined) {
+          setSelectionState({
+            filePath: nextFilePath,
+            doc: nextDoc,
+            nodeId: explicitSelectedNodeId,
+            unresolved: false,
+          });
+        } else {
+          setSelectionState((prevSel) => {
+            if (prevSel.filePath !== nextFilePath) {
+              return {
+                filePath: nextFilePath,
+                doc: nextDoc,
+                nodeId: nextDoc.rootId,
+                unresolved: false,
+              };
+            }
+            if (prevSel.unresolved) {
+              return { filePath: nextFilePath, doc: nextDoc, nodeId: null, unresolved: true };
+            }
+            if (prevSel.nodeId === null) {
+              return {
+                filePath: nextFilePath,
+                doc: nextDoc,
+                nodeId: nextDoc.rootId,
+                unresolved: false,
+              };
+            }
+            if (prevSel.doc === nextDoc) {
+              return prevSel;
+            }
+            const sourceDoc = prevSel.doc ?? prev.doc;
+            const selIndex =
+              sourceDoc === prev.doc ? remapIndex : getRemapIndex(sourceDoc, nextDoc);
+            const mappedSel = selIndex.remapSelectedNodeId(prevSel.nodeId);
+            return {
+              filePath: nextFilePath,
+              doc: nextDoc,
+              nodeId: mappedSel,
+              unresolved: mappedSel === null,
+            };
+          });
+        }
         return;
       }
 
+      if (explicitSelectedNodeId !== undefined) {
+        setSelectionState({
+          filePath: nextFilePath,
+          doc: nextDoc,
+          nodeId: explicitSelectedNodeId,
+          unresolved: false,
+        });
+      }
       const fallbackExpandId = expandNodeId ?? expandBeforeNodeId;
       if (fallbackExpandId !== undefined) {
         setBaseCollapsedIds((prevIds) => {
@@ -230,13 +323,14 @@ export function MindMapApp({
         });
       }
     },
-    [],
+    [getRemapIndex],
   );
 
   // Reset per-note view state when switching to a different Markdown file
   useEffect(() => {
     hasInitialFitRef.current = false;
     prevDocStateRef.current = docRef.current ? { filePath, doc: docRef.current } : null;
+    lastRemapIndexRef.current = null;
     setBaseCollapsedIds(new Set());
     setUserOpenedDuringFilterIds(new Set());
     setFocusMode({ kind: 'off' });
@@ -245,23 +339,41 @@ export function MindMapApp({
     setPopoverOpen(false);
     setStylesOpen(false);
     setEditingSession(null);
-    setSelectedId(null);
+    setSelectionState({
+      filePath,
+      doc: docRef.current,
+      nodeId: docRef.current?.rootId ?? null,
+      unresolved: false,
+    });
   }, [filePath]);
 
-  // Remap node-keyed view state (collapse/fixed focus) when the same note reloads externally
+  // Remap node-keyed view state (collapse/fixed focus/selection) when the same note reloads externally
   useEffect(() => {
     if (!doc) return;
     syncViewStateForNextDoc(filePath, doc);
   }, [filePath, doc, syncViewStateForNextDoc]);
 
-  // Keep selection valid when the underlying document reloads
+  // Synchronously resolve selection on the very first render of a reloaded document so
+  // destructive keys (Delete) never act on a stale sequential n-* ID.
   const effectiveSelectedId = useMemo(() => {
     if (!doc) return null;
-    if (selectedId !== null && doc.nodes.has(selectedId)) {
-      return selectedId;
+    if (selectionState.filePath !== filePath) {
+      return doc.rootId;
     }
-    return doc.rootId;
-  }, [doc, selectedId]);
+    if (selectionState.unresolved) {
+      return null;
+    }
+    if (selectionState.nodeId === null) {
+      return doc.rootId;
+    }
+    if (selectionState.doc === doc) {
+      return doc.nodes.has(selectionState.nodeId) ? selectionState.nodeId : null;
+    }
+    if (selectionState.doc !== null) {
+      return getRemapIndex(selectionState.doc, doc).remapSelectedNodeId(selectionState.nodeId);
+    }
+    return doc.nodes.has(selectionState.nodeId) ? selectionState.nodeId : null;
+  }, [doc, filePath, selectionState, getRemapIndex]);
 
   const effectiveEditingSession = useMemo(() => {
     return isEditingSessionValid(editingSession, filePath, doc) ? editingSession : null;
@@ -523,16 +635,19 @@ export function MindMapApp({
               outcome.nextDocument,
               actualFocusedParentId,
               expandParentId,
+              outcome.focusNodeId,
             );
-          } else if (expandParentId !== undefined) {
-            setBaseCollapsedIds((prev) => {
-              if (!prev.has(expandParentId)) return prev;
-              const next = new Set(prev);
-              next.delete(expandParentId);
-              return next;
-            });
+          } else {
+            if (expandParentId !== undefined) {
+              setBaseCollapsedIds((prev) => {
+                if (!prev.has(expandParentId)) return prev;
+                const next = new Set(prev);
+                next.delete(expandParentId);
+                return next;
+              });
+            }
+            selectNode(outcome.focusNodeId, docRef.current, startedFilePath);
           }
-          setSelectedId(outcome.focusNodeId);
           if (openInlineEditorAfter && outcome.nextDocument !== undefined) {
             const focusedNode = outcome.nextDocument.nodes.get(outcome.focusNodeId);
             if (focusedNode) {
@@ -554,7 +669,7 @@ export function MindMapApp({
         isCommandInFlightRef.current = false;
       }
     },
-    [onDispatchCommand, syncViewStateForNextDoc],
+    [onDispatchCommand, syncViewStateForNextDoc, selectNode],
   );
 
   const runHistoryStep = useCallback(
@@ -570,24 +685,92 @@ export function MindMapApp({
         }
         if (outcome.accepted && outcome.focusNodeId !== undefined) {
           if (outcome.nextDocument !== undefined) {
-            syncViewStateForNextDoc(startedFilePath, outcome.nextDocument);
+            syncViewStateForNextDoc(
+              startedFilePath,
+              outcome.nextDocument,
+              undefined,
+              undefined,
+              outcome.focusNodeId,
+            );
+          } else {
+            selectNode(outcome.focusNodeId, docRef.current, startedFilePath);
           }
           setEditingSession(null);
-          setSelectedId(outcome.focusNodeId);
           rootRef.current?.focus({ preventScroll: true });
         }
       } finally {
         isCommandInFlightRef.current = false;
       }
     },
-    [onUndo, onRedo, syncViewStateForNextDoc],
+    [onUndo, onRedo, syncViewStateForNextDoc, selectNode],
+  );
+
+  const saveDraftAndNotify = useCallback(
+    async (
+      input: SaveDraftInput,
+      options?: {
+        readonly customPersistedNotice?: string;
+        readonly reopenInlineSession?: {
+          readonly nodeId: string;
+          readonly text: string;
+        };
+      },
+    ): Promise<SaveDraftResult | null> => {
+      if (!onSaveDraft) return null;
+      const result = await onSaveDraft(input);
+      if (result.persisted) {
+        onNotify?.(options?.customPersistedNotice ?? messages.edit.draftSavedNotice);
+        return result;
+      }
+
+      // Disk persistence failed (e.g. data.json protected or write error):
+      // never claim the draft survives restart; warn clearly and keep inline input editable.
+      onNotify?.(`${messages.edit.draftPersistFailedNotice}${input.text}`);
+      const reopen = options?.reopenInlineSession;
+      if (reopen && filePathRef.current === input.filePath) {
+        const currentDoc = docRef.current;
+        const targetNode = currentDoc?.nodes.get(reopen.nodeId);
+        if (currentDoc && targetNode && currentDoc.readOnlyReasons.length === 0) {
+          setPopoverOpen(false);
+          setStylesOpen(false);
+          selectNode(targetNode.id, currentDoc, input.filePath);
+          setEditingSession(
+            createEditingSession(
+              input.filePath,
+              currentDoc,
+              targetNode,
+              reopen.text,
+              result.entry.draftId,
+            ),
+          );
+        }
+      }
+      return result;
+    },
+    [onSaveDraft, onNotify, messages, selectNode],
+  );
+
+  const handleCopyDraftText = useCallback(
+    (draftText: string) => {
+      const clipboard = rootRef.current?.ownerDocument.defaultView?.navigator?.clipboard;
+      if (!clipboard || typeof clipboard.writeText !== 'function') return;
+      void clipboard
+        .writeText(draftText)
+        .then(() => {
+          onNotify?.(messages.edit.draftCopiedNotice);
+        })
+        .catch(() => {
+          // Ignore clipboard denial; user can copy directly from the editor/notice.
+        });
+    },
+    [onNotify, messages],
   );
 
   const handleStartEdit = useCallback(
     (nodeId: string) => {
       if (!doc) return;
       if (!onDispatchCommand || doc.readOnlyReasons.length > 0) {
-        setSelectedId(nodeId);
+        selectNode(nodeId, doc, filePath);
         setPopoverOpen(true);
         return;
       }
@@ -595,37 +778,42 @@ export function MindMapApp({
       if (!node) return;
       setPopoverOpen(false);
       setStylesOpen(false);
-      setSelectedId(nodeId);
+      selectNode(nodeId, doc, filePath);
       setEditingSession(createEditingSession(filePath, doc, node));
     },
-    [doc, filePath, onDispatchCommand],
+    [doc, filePath, onDispatchCommand, selectNode],
   );
 
   const handleDiscardEdit = useCallback(
     (unsavedValue: string) => {
       const lastSession = editingSessionRef.current;
       if (lastSession && onSaveDraft && unsavedValue.trim().length > 0) {
-        void onSaveDraft({
-          filePath: lastSession.filePath,
-          field: 'title',
-          targetTitleRaw: lastSession.initialTitleRaw,
-          targetHeaderLine: lastSession.targetHeaderLine,
-          targetOwnRangeHash: lastSession.guard.expectedOwnRangeHash,
-          targetAncestorPath: lastSession.targetAncestorPath,
-          targetHadIdenticalSibling: lastSession.targetHadIdenticalSibling,
-          baseContentHash: lastSession.guard.expectedContentHash,
-          text: unsavedValue,
-        });
+        void saveDraftAndNotify(
+          {
+            filePath: lastSession.filePath,
+            field: 'title',
+            targetTitleRaw: lastSession.initialTitleRaw,
+            targetHeaderLine: lastSession.targetHeaderLine,
+            targetOwnRangeHash: lastSession.guard.expectedOwnRangeHash,
+            targetAncestorPath: lastSession.targetAncestorPath,
+            targetHadIdenticalSibling: lastSession.targetHadIdenticalSibling,
+            baseContentHash: lastSession.guard.expectedContentHash,
+            text: unsavedValue,
+          },
+          { customPersistedNotice: `${messages.edit.unsavedInputDiscarded}${unsavedValue}` },
+        );
+        return;
       }
       onNotify?.(`${messages.edit.unsavedInputDiscarded}${unsavedValue}`);
     },
-    [messages, onNotify, onSaveDraft],
+    [messages, onNotify, onSaveDraft, saveDraftAndNotify],
   );
 
   const handleCommitEdit = useCallback(
     (session: EditingSession, nextTitle: string) => {
       const {
         filePath: sessionFilePath,
+        nodeId: sessionNodeId,
         initialTitleRaw,
         targetHeaderLine,
         targetAncestorPath,
@@ -642,19 +830,23 @@ export function MindMapApp({
       }
       if (!isEditingSessionValid(session, filePathRef.current, docRef.current)) {
         if (onSaveDraft) {
-          void onSaveDraft({
-            filePath: sessionFilePath,
-            field: 'title',
-            targetTitleRaw: initialTitleRaw,
-            targetHeaderLine,
-            targetOwnRangeHash: guard.expectedOwnRangeHash,
-            targetAncestorPath,
-            targetHadIdenticalSibling,
-            baseContentHash: guard.expectedContentHash,
-            text: nextTitle,
-          });
+          void saveDraftAndNotify(
+            {
+              filePath: sessionFilePath,
+              field: 'title',
+              targetTitleRaw: initialTitleRaw,
+              targetHeaderLine,
+              targetOwnRangeHash: guard.expectedOwnRangeHash,
+              targetAncestorPath,
+              targetHadIdenticalSibling,
+              baseContentHash: guard.expectedContentHash,
+              text: nextTitle,
+            },
+            { customPersistedNotice: `${messages.edit.unsavedInputDiscarded}${nextTitle}` },
+          );
+        } else {
+          onNotify?.(`${messages.edit.unsavedInputDiscarded}${nextTitle}`);
         }
-        onNotify?.(`${messages.edit.unsavedInputDiscarded}${nextTitle}`);
         return;
       }
       void dispatchAndFocus(command, false).then((outcome) => {
@@ -673,18 +865,20 @@ export function MindMapApp({
             void onDeleteDraft?.(restoredDraftId);
           }
         } else if (outcome.rejectCode !== 'boundary-no-op' && onSaveDraft) {
-          void onSaveDraft({
-            filePath: sessionFilePath,
-            field: 'title',
-            targetTitleRaw: initialTitleRaw,
-            targetHeaderLine,
-            targetOwnRangeHash: guard.expectedOwnRangeHash,
-            targetAncestorPath,
-            targetHadIdenticalSibling,
-            baseContentHash: guard.expectedContentHash,
-            text: nextTitle,
-          });
-          onNotify?.(messages.edit.draftSavedNotice);
+          void saveDraftAndNotify(
+            {
+              filePath: sessionFilePath,
+              field: 'title',
+              targetTitleRaw: initialTitleRaw,
+              targetHeaderLine,
+              targetOwnRangeHash: guard.expectedOwnRangeHash,
+              targetAncestorPath,
+              targetHadIdenticalSibling,
+              baseContentHash: guard.expectedContentHash,
+              text: nextTitle,
+            },
+            { reopenInlineSession: { nodeId: sessionNodeId, text: nextTitle } },
+          );
         }
       });
     },
@@ -692,6 +886,7 @@ export function MindMapApp({
       onDispatchCommand,
       dispatchAndFocus,
       onSaveDraft,
+      saveDraftAndNotify,
       onDeleteMatchingDraft,
       onDeleteDraft,
       onNotify,
@@ -719,7 +914,7 @@ export function MindMapApp({
       const command = buildUpdateNoteCommand(session, filePathRef.current, nextNoteBody);
       if (command === null || !isNoteEditingSessionValid(session, filePathRef.current, docRef.current)) {
         if (onSaveDraft) {
-          await onSaveDraft({
+          await saveDraftAndNotify({
             filePath: sessionFilePath,
             field: 'note',
             targetTitleRaw,
@@ -730,8 +925,9 @@ export function MindMapApp({
             baseContentHash: guard.expectedContentHash,
             text: nextNoteBody,
           });
+        } else {
+          onNotify?.(`${messages.edit.draftPersistFailedNotice}${nextNoteBody}`);
         }
-        onNotify?.(messages.edit.draftSavedNotice);
         return { accepted: false, rejectCode: 'stale-target' };
       }
 
@@ -751,7 +947,7 @@ export function MindMapApp({
           void onDeleteDraft?.(restoredDraftId);
         }
       } else if (outcome.rejectCode !== 'boundary-no-op' && onSaveDraft) {
-        await onSaveDraft({
+        await saveDraftAndNotify({
           filePath: sessionFilePath,
           field: 'note',
           targetTitleRaw,
@@ -762,9 +958,6 @@ export function MindMapApp({
           baseContentHash: guard.expectedContentHash,
           text: nextNoteBody,
         });
-        if (outcome.rejectCode !== 'invalid-note-block-syntax') {
-          onNotify?.(messages.edit.draftSavedNotice);
-        }
       }
       return outcome;
     },
@@ -772,6 +965,7 @@ export function MindMapApp({
       onDispatchCommand,
       dispatchAndFocus,
       onSaveDraft,
+      saveDraftAndNotify,
       onDeleteMatchingDraft,
       onDeleteDraft,
       onNotify,
@@ -782,7 +976,7 @@ export function MindMapApp({
   const handleRescueNoteDraft = useCallback(
     (session: NoteEditingSession, unsavedBody: string) => {
       if (!onSaveDraft) return;
-      void onSaveDraft({
+      void saveDraftAndNotify({
         filePath: session.filePath,
         field: 'note',
         targetTitleRaw: session.targetTitleRaw,
@@ -793,9 +987,8 @@ export function MindMapApp({
         baseContentHash: session.guard.expectedContentHash,
         text: unsavedBody,
       });
-      onNotify?.(messages.edit.draftSavedNotice);
     },
-    [onSaveDraft, onNotify, messages],
+    [onSaveDraft, saveDraftAndNotify],
   );
 
   const handleRestoreTitleDraft = useCallback(
@@ -805,10 +998,10 @@ export function MindMapApp({
       if (!node) return;
       setPopoverOpen(false);
       setStylesOpen(false);
-      setSelectedId(nodeId);
+      selectNode(nodeId, doc, filePath);
       setEditingSession(createEditingSession(filePath, doc, node, draftText, draftId));
     },
-    [doc, filePath, onDispatchCommand],
+    [doc, filePath, onDispatchCommand, selectNode],
   );
 
   const handleInspectDrafts = useCallback(() => {
@@ -830,10 +1023,10 @@ export function MindMapApp({
         }
       }
     }
-    setSelectedId(targetId ?? doc.rootId);
+    selectNode(targetId ?? doc.rootId, doc, filePath);
     setStylesOpen(false);
     setPopoverOpen(true);
-  }, [doc, drafts, draftResolutions]);
+  }, [doc, filePath, drafts, draftResolutions, selectNode]);
 
   const handleReparentNode = useCallback(
     (nodeId: string, targetParentId: string, index: number) => {
@@ -936,6 +1129,7 @@ export function MindMapApp({
     (session: EditingSession, leftTitle: string, rightTitle: string, fullValue: string) => {
       const {
         filePath: sessionFilePath,
+        nodeId: sessionNodeId,
         initialTitleRaw,
         targetHeaderLine,
         targetAncestorPath,
@@ -947,33 +1141,44 @@ export function MindMapApp({
       rootRef.current?.focus();
       if (!onDispatchCommand) return;
 
-      const rescueFullInput = (): void => {
+      const rescueFullInput = (
+        customPersistedNotice?: string,
+        reopenOnPersistFailure = false,
+      ): void => {
         if (onSaveDraft && fullValue.trim().length > 0) {
-          void onSaveDraft({
-            filePath: sessionFilePath,
-            field: 'title',
-            targetTitleRaw: initialTitleRaw,
-            targetHeaderLine,
-            targetOwnRangeHash: guard.expectedOwnRangeHash,
-            targetAncestorPath,
-            targetHadIdenticalSibling,
-            baseContentHash: guard.expectedContentHash,
-            text: fullValue,
-          });
+          void saveDraftAndNotify(
+            {
+              filePath: sessionFilePath,
+              field: 'title',
+              targetTitleRaw: initialTitleRaw,
+              targetHeaderLine,
+              targetOwnRangeHash: guard.expectedOwnRangeHash,
+              targetAncestorPath,
+              targetHadIdenticalSibling,
+              baseContentHash: guard.expectedContentHash,
+              text: fullValue,
+            },
+            {
+              customPersistedNotice,
+              reopenInlineSession: reopenOnPersistFailure
+                ? { nodeId: sessionNodeId, text: fullValue }
+                : undefined,
+            },
+          );
+        } else if (customPersistedNotice) {
+          onNotify?.(customPersistedNotice);
         }
       };
 
       const command = buildSplitSiblingCommand(session, filePathRef.current, leftTitle, rightTitle);
       if (command === null) {
         if (fullValue.trim().length > 0 && fullValue.trim() !== initialTitleRaw) {
-          rescueFullInput();
-          onNotify?.(messages.edit.draftSavedNotice);
+          rescueFullInput(undefined, true);
         }
         return;
       }
       if (!isEditingSessionValid(session, filePathRef.current, docRef.current)) {
-        rescueFullInput();
-        onNotify?.(`${messages.edit.unsavedInputDiscarded}${fullValue}`);
+        rescueFullInput(`${messages.edit.unsavedInputDiscarded}${fullValue}`, false);
         return;
       }
       void dispatchAndFocus(command, false).then((outcome) => {
@@ -992,8 +1197,7 @@ export function MindMapApp({
             void onDeleteDraft?.(restoredDraftId);
           }
         } else if (outcome.rejectCode !== 'boundary-no-op') {
-          rescueFullInput();
-          onNotify?.(messages.edit.draftSavedNotice);
+          rescueFullInput(undefined, true);
         }
       });
     },
@@ -1001,6 +1205,7 @@ export function MindMapApp({
       onDispatchCommand,
       dispatchAndFocus,
       onSaveDraft,
+      saveDraftAndNotify,
       onDeleteMatchingDraft,
       onDeleteDraft,
       onNotify,
@@ -1387,9 +1592,13 @@ export function MindMapApp({
     const arrowDir = arrowMap[event.key];
     if (arrowDir) {
       event.preventDefault();
+      if (effectiveSelectedId === null) {
+        selectNode(doc.rootId, doc, filePath);
+        return;
+      }
       const next = resolveArrowNavigation(doc, layout, effectiveSelectedId, arrowDir);
       if (next !== null) {
-        setSelectedId(next);
+        selectNode(next, doc, filePath);
       }
       return;
     }
@@ -1517,7 +1726,7 @@ export function MindMapApp({
           onCameraChange={setCamera}
           onViewportResize={handleViewportResize}
           onSelectNode={(id) => {
-            setSelectedId(id);
+            selectNode(id, doc, filePath);
             if (id === null) {
               setPopoverOpen(false);
               setStylesOpen(false);
@@ -1526,7 +1735,7 @@ export function MindMapApp({
           }}
           onToggleCollapse={handleToggleCollapse}
           onOpenPopover={(id) => {
-            setSelectedId(id);
+            selectNode(id, doc, filePath);
             setPopoverOpen(true);
             setStylesOpen(false);
           }}
@@ -1560,11 +1769,13 @@ export function MindMapApp({
               const status = draftResolutions.get(d.draftId)?.status;
               return status === 'ambiguous' || status === 'unmatched';
             })}
+            unpersistedDraftIds={unpersistedDraftIds}
             noteCommitTriggerRef={noteCommitTriggerRef}
             onCommitNote={handleCommitNote}
             onRescueNoteDraft={handleRescueNoteDraft}
             onRestoreTitleDraft={handleRestoreTitleDraft}
             onDeleteDraft={onDeleteDraft ? (id) => void onDeleteDraft(id) : undefined}
+            onCopyDraftText={handleCopyDraftText}
             onClose={handleClosePopover}
             onJumpToSource={(line) => onOpenMarkdown(line)}
             onOpenLink={onOpenLink}
