@@ -9,7 +9,7 @@ import {
 import { createElement } from 'react';
 import { createRoot, type Root } from 'react-dom/client';
 import type { ResolvedThemeMode } from '../core/layout/theme';
-import type { ParseResult, TopicLink, TopicNode } from '../core/model';
+import type { MindMapDocument, ParseResult, TopicLink, TopicNode } from '../core/model';
 import { parseMarkdownToMap } from '../core/parser';
 import { extractSubtreeMarkdown } from '../core/patch';
 import type { SemanticCommand } from '../core/patch/commands';
@@ -146,6 +146,7 @@ export class MindMapView extends FileView {
   private reactRoot: Root | null = null;
   private parseResult: ParseResult | null = null;
   private lastRenderedSnapshot: RenderedFileSnapshot | null = null;
+  private lastCommandFocus: { readonly doc: MindMapDocument; readonly nodeId: string } | null = null;
   private loadSequence = 0;
   private actionTriggers: MindMapActionTriggers | null = null;
   private readonly registerActionTriggers = (triggers: MindMapActionTriggers | null): void => {
@@ -294,6 +295,7 @@ export class MindMapView extends FileView {
       return;
     }
     this.parseResult = parseMarkdownToMap(rawText, file.basename);
+    this.lastCommandFocus = null;
     this.lastRenderedSnapshot = {
       path: file.path,
       basename: file.basename,
@@ -388,6 +390,10 @@ export class MindMapView extends FileView {
   ): void {
     if (outcome.accepted && outcome.nextDocument !== undefined) {
       this.parseResult = { status: 'ok', document: outcome.nextDocument };
+      this.lastCommandFocus =
+        outcome.focusNodeId !== undefined
+          ? { doc: outcome.nextDocument, nodeId: outcome.focusNodeId }
+          : null;
       this.lastRenderedSnapshot =
         outcome.nextRawText !== undefined
           ? { path: targetPath, basename: targetBasename, rawText: outcome.nextRawText }
@@ -419,6 +425,7 @@ export class MindMapView extends FileView {
   async onUnloadFile(_file: TFile): Promise<void> {
     this.loadSequence += 1;
     this.parseResult = null;
+    this.lastCommandFocus = null;
     this.lastRenderedSnapshot = null;
     this.actionTriggers = null;
     this.unmountReact();
@@ -427,6 +434,7 @@ export class MindMapView extends FileView {
   async onClose(): Promise<void> {
     this.loadSequence += 1;
     this.parseResult = null;
+    this.lastCommandFocus = null;
     this.lastRenderedSnapshot = null;
     this.actionTriggers = null;
     this.unmountReact();
@@ -499,13 +507,20 @@ export class MindMapView extends FileView {
       createElement(MindMapApp, {
         filePath: activePath,
         parseResult: this.parseResult,
+        preferredSelection: this.lastCommandFocus,
         themeMode: this.resolveThemeMode(),
         settings: this.plugin.mindMapSettings,
         messages: this.plugin.messages,
         drafts: fileDrafts,
         unpersistedDraftIds: draftStore.getUnpersistedDraftIds(),
+        draftRevisions: draftStore.getDraftRevisions(),
         onSaveDraft: (input: SaveDraftInput) => draftStore.saveDraft(input),
-        onDeleteDraft: (draftId: string) => draftStore.deleteDraft(draftId),
+        onIsLatestDraftRevision: (draftId: string, expectedRevision: number) =>
+          draftStore.isLatestDraftRevision(draftId, expectedRevision),
+        onGetDraftRevision: (draftId: string) => draftStore.getDraftRevision(draftId),
+        onGetDraftSnapshotRevision: () => draftStore.getSnapshotRevision(),
+        onDeleteDraft: (draftId: string, expectedRevision?: number) =>
+          draftStore.deleteDraft(draftId, expectedRevision),
         onDeleteMatchingDraft: (
           filePath: string,
           field: 'title' | 'note',
@@ -515,6 +530,7 @@ export class MindMapView extends FileView {
           targetOwnRangeHash?: string,
           baseContentHash?: string,
           targetHadIdenticalSibling?: boolean,
+          maxRevision?: number,
         ) =>
           draftStore.deleteMatchingDraft(
             filePath,
@@ -525,6 +541,7 @@ export class MindMapView extends FileView {
             targetOwnRangeHash,
             baseContentHash,
             targetHadIdenticalSibling,
+            maxRevision,
           ),
         onCopyBranchSubtree: (node: TopicNode) => this.copyBranchSubtree(node),
         onReadBranchClipboard: () => this.readBranchClipboard(),

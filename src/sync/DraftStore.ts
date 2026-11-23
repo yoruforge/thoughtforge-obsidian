@@ -223,6 +223,8 @@ export type DraftPersistHandler = (drafts: readonly DraftEntry[]) => Promise<boo
 export interface SaveDraftResult {
   readonly entry: DraftEntry;
   readonly persisted: boolean;
+  /** Monotonic DraftStore revision assigned to this draft entry when saved. */
+  readonly draftRevision: number;
 }
 
 function generateId(prefix: string): string {
@@ -239,9 +241,10 @@ export class DraftStore {
   private drafts: DraftEntry[];
   private readonly deviceId: string;
   private readonly listeners = new Set<() => void>();
-  /** Monotonic local mutation counter used so older successful writes never clear newer dirty drafts. */
+  /** Monotonic local mutation counter used so older writes/commits never supersede newer drafts. */
   private revision = 0;
   private readonly dirtyRevisionByDraftId = new Map<string, number>();
+  private readonly entryRevisionByDraftId = new Map<string, number>();
   /** Serializes persist() calls in FIFO order so older snapshots cannot overwrite newer ones on disk. */
   private persistChain: Promise<void> = Promise.resolve();
 
@@ -252,6 +255,9 @@ export class DraftStore {
   ) {
     this.drafts = [...initialDrafts];
     this.deviceId = deviceId ?? generateId('dev');
+    for (const entry of this.drafts) {
+      this.entryRevisionByDraftId.set(entry.draftId, 0);
+    }
   }
 
   subscribe(listener: () => void): () => void {
@@ -300,6 +306,22 @@ export class DraftStore {
 
   getUnpersistedDraftIds(): ReadonlySet<string> {
     return new Set(this.dirtyRevisionByDraftId.keys());
+  }
+
+  getSnapshotRevision(): number {
+    return this.revision;
+  }
+
+  getDraftRevision(draftId: string): number | undefined {
+    return this.entryRevisionByDraftId.get(draftId);
+  }
+
+  getDraftRevisions(): ReadonlyMap<string, number> {
+    return new Map(this.entryRevisionByDraftId);
+  }
+
+  isLatestDraftRevision(draftId: string, expectedRevision: number): boolean {
+    return this.entryRevisionByDraftId.get(draftId) === expectedRevision;
   }
 
   isDraftPersisted(draftId: string): boolean {
@@ -393,6 +415,7 @@ export class DraftStore {
       nextList.length = MAX_DRAFTS;
       for (const dropped of evicted) {
         this.dirtyRevisionByDraftId.delete(dropped.draftId);
+        this.entryRevisionByDraftId.delete(dropped.draftId);
       }
     }
 
@@ -400,21 +423,30 @@ export class DraftStore {
     this.revision += 1;
     const snapshotRev = this.revision;
     this.dirtyRevisionByDraftId.set(nextEntry.draftId, snapshotRev);
+    this.entryRevisionByDraftId.set(nextEntry.draftId, snapshotRev);
     this.emitChange();
 
     const persisted = await this.enqueuePersist([...this.drafts], snapshotRev);
-    return { entry: nextEntry, persisted };
+    return { entry: nextEntry, persisted, draftRevision: snapshotRev };
   }
 
-  async deleteDraft(draftId: string): Promise<void> {
+  async deleteDraft(draftId: string, expectedRevision?: number): Promise<boolean> {
+    if (
+      expectedRevision !== undefined &&
+      this.entryRevisionByDraftId.get(draftId) !== expectedRevision
+    ) {
+      return false;
+    }
     const nextList = this.drafts.filter((entry) => entry.draftId !== draftId);
-    if (nextList.length === this.drafts.length) return;
+    if (nextList.length === this.drafts.length) return false;
     this.drafts = nextList;
     this.dirtyRevisionByDraftId.delete(draftId);
+    this.entryRevisionByDraftId.delete(draftId);
     this.revision += 1;
     const snapshotRev = this.revision;
     this.emitChange();
     await this.enqueuePersist([...this.drafts], snapshotRev);
+    return true;
   }
 
   async deleteMatchingDraft(
@@ -426,7 +458,8 @@ export class DraftStore {
     targetOwnRangeHash?: string,
     baseContentHash?: string,
     targetHadIdenticalSibling?: boolean,
-  ): Promise<void> {
+    maxRevision?: number,
+  ): Promise<boolean> {
     const existing = this.findDraft(
       filePath,
       field,
@@ -437,8 +470,12 @@ export class DraftStore {
       baseContentHash,
       targetHadIdenticalSibling,
     );
-    if (!existing) return;
-    await this.deleteDraft(existing.draftId);
+    if (!existing) return false;
+    const currentRev = this.entryRevisionByDraftId.get(existing.draftId) ?? 0;
+    if (maxRevision !== undefined && currentRev > maxRevision) {
+      return false;
+    }
+    return this.deleteDraft(existing.draftId, currentRev);
   }
 
   async renameFilePath(oldPath: string, newPath: string): Promise<void> {

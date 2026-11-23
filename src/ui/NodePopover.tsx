@@ -13,6 +13,11 @@ import { createNoteEditingSession, type NoteEditingSession } from './editSession
 import { ImeGuard, type GuardableKeyEvent } from './imeGuard';
 import { shouldHandlePopoverDocumentEscape } from './keyboardGuard';
 
+export interface NoteCommitOutcome extends CommandDispatchOutcome {
+  readonly rescuedDraftId?: string;
+  readonly rescuedDraftRevision?: number;
+}
+
 export interface NodePopoverProps {
   readonly filePath: string;
   readonly document: MindMapDocument;
@@ -22,17 +27,25 @@ export interface NodePopoverProps {
   readonly canEdit: boolean;
   readonly imeGuardWindowMs: number;
   readonly startEditingNoteToken: number;
+  readonly onConsumeNoteEditRequest?: () => void;
   readonly nodeDrafts: readonly DraftEntry[];
   readonly ambiguousDrafts?: readonly DraftEntry[];
   readonly unpersistedDraftIds?: ReadonlySet<string>;
+  readonly draftRevisions?: ReadonlyMap<string, number>;
   readonly noteCommitTriggerRef?: MutableRefObject<((event: GuardableKeyEvent) => boolean) | null>;
+  readonly onGetDraftSnapshotRevision?: () => number;
   readonly onCommitNote?: (
     session: NoteEditingSession,
     nextNoteBody: string,
-  ) => Promise<CommandDispatchOutcome>;
+  ) => Promise<NoteCommitOutcome>;
   readonly onRescueNoteDraft?: (session: NoteEditingSession, unsavedBody: string) => void;
-  readonly onRestoreTitleDraft?: (nodeId: string, draftText: string, draftId: string) => void;
-  readonly onDeleteDraft?: (draftId: string) => void;
+  readonly onRestoreTitleDraft?: (
+    nodeId: string,
+    draftText: string,
+    draftId: string,
+    draftRevision?: number,
+  ) => void;
+  readonly onDeleteDraft?: (draftId: string, expectedRevision?: number) => void;
   readonly onCopyDraftText?: (draftText: string) => void;
   readonly onClose: () => void;
   readonly onJumpToSource: (line: number) => void;
@@ -48,10 +61,13 @@ export function NodePopover({
   canEdit,
   imeGuardWindowMs,
   startEditingNoteToken,
+  onConsumeNoteEditRequest,
   nodeDrafts,
   ambiguousDrafts = [],
   unpersistedDraftIds,
+  draftRevisions,
   noteCommitTriggerRef,
+  onGetDraftSnapshotRevision,
   onCommitNote,
   onRescueNoteDraft,
   onRestoreTitleDraft,
@@ -122,29 +138,54 @@ export function NodePopover({
   }, [node.noteText, noteSession]);
 
   const beginNoteEdit = useCallback(
-    (prefill?: string, restoredDraftId?: string) => {
+    (prefill?: string, restoredDraftId?: string, restoredDraftRevision?: number) => {
       if (!editable || isSavingRef.current) return;
-      const session = createNoteEditingSession(filePath, doc, node, restoredDraftId);
+      const snapshotRev = onGetDraftSnapshotRevision?.();
+      const session = createNoteEditingSession(
+        filePath,
+        doc,
+        node,
+        restoredDraftId,
+        restoredDraftRevision,
+        restoredDraftRevision ?? snapshotRev,
+      );
       setNoteSession(session);
       setDraftText(prefill !== undefined ? prefill : (node.noteText ?? ''));
     },
-    [editable, filePath, doc, node],
+    [editable, filePath, doc, node, onGetDraftSnapshotRevision],
   );
 
   // Triggered when user invokes Cmd/Ctrl+Shift+T or Command Palette "Edit topic note"
   useEffect(() => {
-    if (startEditingNoteToken > 0 && startEditingNoteToken !== lastStartTokenRef.current) {
+    if (startEditingNoteToken === 0) {
+      lastStartTokenRef.current = 0;
+      return;
+    }
+    if (startEditingNoteToken !== lastStartTokenRef.current) {
       lastStartTokenRef.current = startEditingNoteToken;
+      onConsumeNoteEditRequest?.();
       if (editable) {
         const existingNoteDraft = nodeDrafts.find((d) => d.field === 'note');
         if (existingNoteDraft) {
-          beginNoteEdit(existingNoteDraft.text, existingNoteDraft.draftId);
+          beginNoteEdit(
+            existingNoteDraft.text,
+            existingNoteDraft.draftId,
+            draftRevisions?.get(existingNoteDraft.draftId),
+          );
         } else {
           beginNoteEdit(node.noteText ?? '');
         }
       }
     }
-  }, [startEditingNoteToken, editable, beginNoteEdit, node.noteText, nodeDrafts]);
+  }, [
+    startEditingNoteToken,
+    onConsumeNoteEditRequest,
+    editable,
+    beginNoteEdit,
+    node.noteText,
+    nodeDrafts,
+    draftRevisions,
+  ]);
 
   // Focus textarea when note edit mode opens
   useEffect(() => {
@@ -167,6 +208,19 @@ export function NodePopover({
       if (outcome.accepted || outcome.rejectCode === 'boundary-no-op') {
         noteSessionRef.current = null;
         setNoteSession(null);
+      } else if (
+        outcome.rescuedDraftId !== undefined &&
+        outcome.rescuedDraftRevision !== undefined &&
+        noteSessionRef.current === activeSession
+      ) {
+        const updatedSession: NoteEditingSession = {
+          ...activeSession,
+          restoredDraftId: outcome.rescuedDraftId,
+          restoredDraftRevision: outcome.rescuedDraftRevision,
+          draftSnapshotRevision: outcome.rescuedDraftRevision,
+        };
+        noteSessionRef.current = updatedSession;
+        setNoteSession(updatedSession);
       }
       // On failure (dirty editor, stale target, block syntax, etc.) keep textarea open with
       // the user's text intact while App/DraftStore persists the field:'note' draft.
@@ -313,7 +367,9 @@ export function NodePopover({
                   <button
                     type="button"
                     className="ito-btn ito-btn-primary ito-draft-restore-btn"
-                    onClick={() => beginNoteEdit(draft.text, draft.draftId)}
+                    onClick={() =>
+                      beginNoteEdit(draft.text, draft.draftId, draftRevisions?.get(draft.draftId))
+                    }
                   >
                     {messages.popover.draftRestoreButton}
                   </button>
@@ -322,7 +378,14 @@ export function NodePopover({
                   <button
                     type="button"
                     className="ito-btn ito-btn-primary ito-draft-restore-btn"
-                    onClick={() => onRestoreTitleDraft(node.id, draft.text, draft.draftId)}
+                    onClick={() =>
+                      onRestoreTitleDraft(
+                        node.id,
+                        draft.text,
+                        draft.draftId,
+                        draftRevisions?.get(draft.draftId),
+                      )
+                    }
                   >
                     {messages.popover.draftRestoreButton}
                   </button>
@@ -340,7 +403,7 @@ export function NodePopover({
                   <button
                     type="button"
                     className="ito-btn ito-draft-discard-btn"
-                    onClick={() => onDeleteDraft(draft.draftId)}
+                    onClick={() => onDeleteDraft(draft.draftId, draftRevisions?.get(draft.draftId))}
                   >
                     {messages.popover.draftDiscardButton}
                   </button>
@@ -399,7 +462,9 @@ export function NodePopover({
                     <button
                       type="button"
                       className="ito-btn ito-btn-primary ito-draft-restore-btn"
-                      onClick={() => beginNoteEdit(draft.text, draft.draftId)}
+                      onClick={() =>
+                        beginNoteEdit(draft.text, draft.draftId, draftRevisions?.get(draft.draftId))
+                      }
                     >
                       {messages.popover.draftRestoreHereButton}
                     </button>
@@ -408,7 +473,14 @@ export function NodePopover({
                     <button
                       type="button"
                       className="ito-btn ito-btn-primary ito-draft-restore-btn"
-                      onClick={() => onRestoreTitleDraft(node.id, draft.text, draft.draftId)}
+                      onClick={() =>
+                        onRestoreTitleDraft(
+                          node.id,
+                          draft.text,
+                          draft.draftId,
+                          draftRevisions?.get(draft.draftId),
+                        )
+                      }
                     >
                       {messages.popover.draftRestoreHereButton}
                     </button>
@@ -426,7 +498,9 @@ export function NodePopover({
                     <button
                       type="button"
                       className="ito-btn ito-draft-discard-btn"
-                      onClick={() => onDeleteDraft(draft.draftId)}
+                      onClick={() =>
+                        onDeleteDraft(draft.draftId, draftRevisions?.get(draft.draftId))
+                      }
                     >
                       {messages.popover.draftDiscardButton}
                     </button>

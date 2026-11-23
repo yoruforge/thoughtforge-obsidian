@@ -8,8 +8,9 @@ export interface DocumentRemapIndex {
   /**
    * Strict fail-closed remap for the active selection (targeted by destructive commands like Delete).
    * Never guesses by ordinal index across ambiguous identical siblings or changed duplicate counts,
-   * and only falls back across different parents when (titleRaw, ownRangeHash) is unique across
-   * BOTH the entire `beforeDoc` and the entire `afterDoc`.
+   * verifies both `ownRangeHash` and explicit `preservedBlockId` equality so a sibling taking over
+   * an old title under the same parent can never steal selection, and only falls back across
+   * different parents when `(titleRaw, ownRangeHash)` is unique across BOTH `beforeDoc` and `afterDoc`.
    */
   remapSelectedNodeId(oldNodeId: string): string | null;
   remapNodeIdSet(ids: ReadonlySet<string>): ReadonlySet<string>;
@@ -22,6 +23,7 @@ interface IndexedDocument {
   readonly ordinalById: ReadonlyMap<string, number>;
   readonly byKeyAndHash: ReadonlyMap<string, readonly TopicNode[]>;
   readonly byTitleAndHash: ReadonlyMap<string, readonly TopicNode[]>;
+  readonly byBlockId: ReadonlyMap<string, readonly TopicNode[]>;
 }
 
 function indexDocument(doc: MindMapDocument): IndexedDocument {
@@ -48,6 +50,7 @@ function indexDocument(doc: MindMapDocument): IndexedDocument {
   const ordinalById = new Map<string, number>();
   const byKeyAndHash = new Map<string, TopicNode[]>();
   const byTitleAndHash = new Map<string, TopicNode[]>();
+  const byBlockId = new Map<string, TopicNode[]>();
 
   for (const node of doc.nodes.values()) {
     const key = computeKey(node);
@@ -75,6 +78,15 @@ function indexDocument(doc: MindMapDocument): IndexedDocument {
     } else {
       byTitleAndHash.set(thKey, [node]);
     }
+
+    if (node.preservedBlockId !== null) {
+      const blockBucket = byBlockId.get(node.preservedBlockId);
+      if (blockBucket) {
+        blockBucket.push(node);
+      } else {
+        byBlockId.set(node.preservedBlockId, [node]);
+      }
+    }
   }
 
   return {
@@ -83,6 +95,7 @@ function indexDocument(doc: MindMapDocument): IndexedDocument {
     ordinalById,
     byKeyAndHash,
     byTitleAndHash,
+    byBlockId,
   };
 }
 
@@ -111,6 +124,21 @@ export function createDocumentRemapIndex(
   const beforeIdx = indexDocument(beforeDoc);
   const afterIdx = indexDocument(afterDoc);
 
+  const isBlockIdCompatible = (beforeNode: TopicNode, afterNode: TopicNode): boolean => {
+    if (beforeNode.preservedBlockId !== null) {
+      return afterNode.preservedBlockId === beforeNode.preservedBlockId;
+    }
+    // If `afterNode` carries a block ID that already belonged to another node in `beforeDoc`,
+    // `afterNode` is provably a different branch that took over `beforeNode`'s title.
+    if (
+      afterNode.preservedBlockId !== null &&
+      beforeIdx.byBlockId.has(afterNode.preservedBlockId)
+    ) {
+      return false;
+    }
+    return true;
+  };
+
   const matchGloballyUniqueCrossParent = (beforeNode: TopicNode): string | null => {
     const thKey = `${beforeNode.titleRaw}\0${beforeNode.ownRangeHash}`;
     const beforeGlobal = beforeIdx.byTitleAndHash.get(thKey);
@@ -118,7 +146,12 @@ export function createDocumentRemapIndex(
       return null;
     }
     const afterGlobal = afterIdx.byTitleAndHash.get(thKey);
-    if (afterGlobal && afterGlobal.length === 1 && afterGlobal[0]) {
+    if (
+      afterGlobal &&
+      afterGlobal.length === 1 &&
+      afterGlobal[0] &&
+      afterGlobal[0].preservedBlockId === beforeNode.preservedBlockId
+    ) {
       return afterGlobal[0].id;
     }
     return null;
@@ -131,6 +164,22 @@ export function createDocumentRemapIndex(
     const beforeNode = beforeDoc.nodes.get(oldNodeId);
     if (!beforeNode) return null;
 
+    // For non-destructive view states (collapsed branches, fixed focus), a unique explicit
+    // Obsidian block ID tracks the exact topic even across renames and prevents title-takeover collisions.
+    if (beforeNode.preservedBlockId !== null) {
+      const beforeByBlock = beforeIdx.byBlockId.get(beforeNode.preservedBlockId);
+      const afterByBlock = afterIdx.byBlockId.get(beforeNode.preservedBlockId);
+      if (
+        beforeByBlock &&
+        beforeByBlock.length === 1 &&
+        afterByBlock &&
+        afterByBlock.length === 1 &&
+        afterByBlock[0]
+      ) {
+        return afterByBlock[0].id;
+      }
+    }
+
     const key = beforeIdx.keyById.get(oldNodeId);
     const afterBucket = key !== undefined ? afterIdx.groups.get(key) : undefined;
 
@@ -139,18 +188,26 @@ export function createDocumentRemapIndex(
     }
 
     if (afterBucket.length === 1 && afterBucket[0]) {
-      return afterBucket[0].id;
+      return isBlockIdCompatible(beforeNode, afterBucket[0]) ? afterBucket[0].id : null;
     }
 
     const khMatches =
       key !== undefined ? afterIdx.byKeyAndHash.get(`${key}\0${beforeNode.ownRangeHash}`) : undefined;
-    if (khMatches && khMatches.length === 1 && khMatches[0]) {
+    if (
+      khMatches &&
+      khMatches.length === 1 &&
+      khMatches[0] &&
+      isBlockIdCompatible(beforeNode, khMatches[0])
+    ) {
       return khMatches[0].id;
     }
 
     const oldOrdinal = beforeIdx.ordinalById.get(oldNodeId);
     if (oldOrdinal !== undefined && oldOrdinal >= 0 && oldOrdinal < afterBucket.length) {
-      return afterBucket[oldOrdinal]?.id ?? null;
+      const ordinalCandidate = afterBucket[oldOrdinal];
+      if (ordinalCandidate && isBlockIdCompatible(beforeNode, ordinalCandidate)) {
+        return ordinalCandidate.id;
+      }
     }
     return null;
   };
@@ -163,10 +220,7 @@ export function createDocumentRemapIndex(
     if (!beforeNode) return null;
 
     const key = beforeIdx.keyById.get(oldNodeId);
-    const beforeBucket = key !== undefined ? (beforeIdx.groups.get(key) ?? []) : [];
     const afterBucket = key !== undefined ? afterIdx.groups.get(key) : undefined;
-    const beforeSameKeyHashCount =
-      key !== undefined ? (beforeIdx.byKeyAndHash.get(`${key}\0${beforeNode.ownRangeHash}`)?.length ?? 0) : 0;
 
     if (!afterBucket || afterBucket.length === 0) {
       // Cross-parent fallback requires document-wide uniqueness in BOTH beforeDoc and afterDoc
@@ -174,20 +228,22 @@ export function createDocumentRemapIndex(
       return matchGloballyUniqueCrossParent(beforeNode);
     }
 
-    if (afterBucket.length === 1 && afterBucket[0]) {
-      if (beforeBucket.length === 1) {
-        return afterBucket[0].id;
-      }
-      if (beforeSameKeyHashCount === 1 && afterBucket[0].ownRangeHash === beforeNode.ownRangeHash) {
-        return afterBucket[0].id;
-      }
+    if (key === undefined) return null;
+    const khKey = `${key}\0${beforeNode.ownRangeHash}`;
+    const beforeKhMatches = beforeIdx.byKeyAndHash.get(khKey);
+    if (!beforeKhMatches || beforeKhMatches.length !== 1) {
       return null;
     }
-
-    // Multiple same-titled siblings in afterDoc: O(1) lookup requiring unique ownRangeHash proof.
-    if (beforeSameKeyHashCount !== 1 || key === undefined) return null;
-    const khMatches = afterIdx.byKeyAndHash.get(`${key}\0${beforeNode.ownRangeHash}`);
-    return khMatches && khMatches.length === 1 && khMatches[0] ? khMatches[0].id : null;
+    const afterKhMatches = afterIdx.byKeyAndHash.get(khKey);
+    if (
+      afterKhMatches &&
+      afterKhMatches.length === 1 &&
+      afterKhMatches[0] &&
+      afterKhMatches[0].preservedBlockId === beforeNode.preservedBlockId
+    ) {
+      return afterKhMatches[0].id;
+    }
+    return null;
   };
 
   const remapNodeIdSet = (ids: ReadonlySet<string>): ReadonlySet<string> => {

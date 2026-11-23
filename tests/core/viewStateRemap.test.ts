@@ -80,6 +80,55 @@ describe('viewStateRemap (O(N) index, view state, and strict selection remap)', 
     const crossIndex = createDocumentRemapIndex(crossBefore, crossAfter);
     expect(crossIndex.remapSelectedNodeId(memoABefore.id)).toBeNull();
     expect(crossIndex.remapNodeId(memoABefore.id)).toBeNull();
+
+    // 6. Codex PR #13 P1-1 repro: Under the same parent, A ^record-one -> C ^record-one and
+    //    B ^record-two -> A ^record-two. Selection MUST fail closed (null) and NEVER jump onto A ^record-two!
+    //    Meanwhile non-destructive remapNodeId follows the unique explicit block ID to C ^record-one.
+    const blkBefore = parseOk('# Root\n- A ^record-one\n- B ^record-two\n');
+    const blkAfter = parseOk('# Root\n- C ^record-one\n- A ^record-two\n');
+    const beforeRecordOne = [...blkBefore.nodes.values()].find(
+      (n) => n.preservedBlockId === '^record-one',
+    );
+    const afterRecordOne = [...blkAfter.nodes.values()].find(
+      (n) => n.preservedBlockId === '^record-one',
+    );
+    expect(beforeRecordOne).toBeDefined();
+    expect(afterRecordOne).toBeDefined();
+    if (!beforeRecordOne || !afterRecordOne) return;
+    const blkIndex = createDocumentRemapIndex(blkBefore, blkAfter);
+    expect(blkIndex.remapSelectedNodeId(beforeRecordOne.id)).toBeNull();
+    expect(blkIndex.remapNodeId(beforeRecordOne.id)).toBe(afterRecordOne.id);
+
+    // 7. Preceding insert keeps selection on unchanged A ^record-one
+    const blkShiftAfter = parseOk('# Root\n- Z\n- A ^record-one\n- B ^record-two\n');
+    const afterShiftOne = [...blkShiftAfter.nodes.values()].find(
+      (n) => n.preservedBlockId === '^record-one',
+    );
+    expect(afterShiftOne).toBeDefined();
+    if (!afterShiftOne) return;
+    expect(
+      createDocumentRemapIndex(blkBefore, blkShiftAfter).remapSelectedNodeId(beforeRecordOne.id),
+    ).toBe(afterShiftOne.id);
+
+    // 8. Title takeover without block IDs when notes differ (A note1 -> C note1, B note2 -> A note2)
+    //    MUST also fail closed (null) for active selection!
+    const noteBefore = parseOk('# Root\n- A\n  Note A\n- B\n  Note B\n');
+    const noteAfter = parseOk('# Root\n- C\n  Note A\n- A\n  Note B\n');
+    const beforeNoteA = [...noteBefore.nodes.values()].find((n) => n.titleRaw === 'A');
+    expect(beforeNoteA).toBeDefined();
+    if (!beforeNoteA) return;
+    expect(createDocumentRemapIndex(noteBefore, noteAfter).remapSelectedNodeId(beforeNoteA.id)).toBeNull();
+
+    // 9. Non-blockId node whose title is taken over by a sibling carrying an existing block ID
+    //    MUST NOT match in either remapSelectedNodeId or remapNodeId.
+    const takeoverBefore = parseOk('# Root\n- A\n- B ^record-two\n');
+    const takeoverAfter = parseOk('# Root\n- C\n- A ^record-two\n');
+    const plainABefore = [...takeoverBefore.nodes.values()].find((n) => n.titleRaw === 'A');
+    expect(plainABefore).toBeDefined();
+    if (!plainABefore) return;
+    const takeoverIndex = createDocumentRemapIndex(takeoverBefore, takeoverAfter);
+    expect(takeoverIndex.remapSelectedNodeId(plainABefore.id)).toBeNull();
+    expect(takeoverIndex.remapNodeId(plainABefore.id)).toBeNull();
   });
 
   it('clears fixed focus and drops collapsed entry cleanly when the anchored node is deleted', () => {

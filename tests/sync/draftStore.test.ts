@@ -771,4 +771,86 @@ describe('DraftStore (M2-c field:title|note persistence & fail-closed resolution
     expect(store.isDraftPersisted(resV2.entry.draftId)).toBe(false);
     expect(store.getUnpersistedDraftIds().has(resV2.entry.draftId)).toBe(true);
   });
+
+  it('tracks draft revisions so stale failures are detected and stale commits never delete newer drafts (PR #13 P1-2)', async () => {
+    const firstGate: { release: ((ok: boolean) => void) | null } = { release: null };
+    let resolveStarted!: () => void;
+    const firstStarted = new Promise<void>((resolve) => {
+      resolveStarted = resolve;
+    });
+    let callCount = 0;
+
+    const store = new DraftStore(
+      [],
+      async () => {
+        callCount += 1;
+        if (callCount === 1) {
+          return new Promise<boolean>((resolve) => {
+            firstGate.release = resolve;
+            resolveStarted();
+          });
+        }
+        return false;
+      },
+      'dev-rev-guard',
+    );
+
+    const pV1 = store.saveDraft({
+      filePath: 'notes/e.md',
+      field: 'title',
+      targetTitleRaw: 'Target',
+      targetHeaderLine: 1,
+      targetAncestorPath: ['Root'],
+      targetOwnRangeHash: 'h-target',
+      targetHadIdenticalSibling: false,
+      baseContentHash: 'doc-h1',
+      text: '# v1',
+    });
+    const pV2 = store.saveDraft({
+      filePath: 'notes/e.md',
+      field: 'title',
+      targetTitleRaw: 'Target',
+      targetHeaderLine: 1,
+      targetAncestorPath: ['Root'],
+      targetOwnRangeHash: 'h-target',
+      targetHadIdenticalSibling: false,
+      baseContentHash: 'doc-h1',
+      text: '# v2 with additional text',
+    });
+
+    await firstStarted;
+    firstGate.release?.(false);
+    const [resV1, resV2] = await Promise.all([pV1, pV2]);
+
+    expect(resV1.entry.draftId).toBe(resV2.entry.draftId);
+    expect(resV2.draftRevision).toBeGreaterThan(resV1.draftRevision);
+    // Stale # v1 save MUST NOT be considered the latest revision; # v2 MUST be latest.
+    expect(store.isLatestDraftRevision(resV1.entry.draftId, resV1.draftRevision)).toBe(false);
+    expect(store.isLatestDraftRevision(resV2.entry.draftId, resV2.draftRevision)).toBe(true);
+
+    // Committing from a stale session (maxRevision/expectedRevision = resV1.draftRevision)
+    // MUST NOT delete the newer # v2 draft!
+    const deletedMatchingStale = await store.deleteMatchingDraft(
+      'notes/e.md',
+      'title',
+      'Target',
+      1,
+      ['Root'],
+      'h-target',
+      'doc-h1',
+      false,
+      resV1.draftRevision,
+    );
+    const deletedDirectStale = await store.deleteDraft(resV1.entry.draftId, resV1.draftRevision);
+    expect(deletedMatchingStale).toBe(false);
+    expect(deletedDirectStale).toBe(false);
+    expect(store.listDraftsForFile('notes/e.md').map((d) => d.text)).toEqual([
+      '# v2 with additional text',
+    ]);
+
+    // Committing from the latest session (expectedRevision = resV2.draftRevision) deletes cleanly!
+    const deletedLatest = await store.deleteDraft(resV2.entry.draftId, resV2.draftRevision);
+    expect(deletedLatest).toBe(true);
+    expect(store.listDraftsForFile('notes/e.md')).toHaveLength(0);
+  });
 });
