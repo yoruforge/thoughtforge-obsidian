@@ -1,5 +1,10 @@
 import type { MindMapDocument, OffsetRange, TopicNode, UnmappedKind } from '../model';
-import { countIndentColumns, listItemContentColumnsOfLine } from '../parser/blockScanner';
+import { parseMarkdownToMap } from '../parser';
+import {
+  countIndentColumns,
+  listItemContentColumnsOfLine,
+  scanBlocks,
+} from '../parser/blockScanner';
 import type {
   PatchFocusHint,
   PatchGuard,
@@ -286,19 +291,20 @@ function needsBlankLineBeforeInsert(doc: MindMapDocument, insertLineIndex: numbe
   return false;
 }
 
-function buildInsertLineEdit(
+function buildInsertBlockEdit(
   lfText: string,
   lineIndex: LineIndex,
   insertLineIndex: number,
-  newLine: string,
+  newLines: readonly string[],
   prependBlankLine: boolean,
-): { readonly edit: TextEdit; readonly targetHeaderLine: number } {
+): { readonly edit: TextEdit; readonly firstInsertedLine: number } {
+  const blockText = newLines.join('\n');
   const { lines, lineStartOffsets, hasTrailingNewline } = lineIndex;
 
   if (lines.length === 0) {
     return {
-      edit: { range: { start: 0, end: 0 }, replacement: `${newLine}\n` },
-      targetHeaderLine: 0,
+      edit: { range: { start: 0, end: 0 }, replacement: `${blockText}\n` },
+      firstInsertedLine: 0,
     };
   }
 
@@ -310,20 +316,37 @@ function buildInsertLineEdit(
     return {
       edit: {
         range: { start: offset, end: offset },
-        replacement: `${blankPrefix}${newLine}\n`,
+        replacement: `${blankPrefix}${blockText}\n`,
       },
-      targetHeaderLine: insertLineIndex + blankOffset,
+      firstInsertedLine: insertLineIndex + blankOffset,
     };
   }
 
   const offset = lfText.length;
   const replacement = hasTrailingNewline
-    ? `${blankPrefix}${newLine}\n`
-    : `\n${blankPrefix}${newLine}`;
+    ? `${blankPrefix}${blockText}\n`
+    : `\n${blankPrefix}${blockText}`;
   return {
     edit: { range: { start: offset, end: offset }, replacement },
-    targetHeaderLine: lines.length + blankOffset,
+    firstInsertedLine: lines.length + blankOffset,
   };
+}
+
+function buildInsertLineEdit(
+  lfText: string,
+  lineIndex: LineIndex,
+  insertLineIndex: number,
+  newLine: string,
+  prependBlankLine: boolean,
+): { readonly edit: TextEdit; readonly targetHeaderLine: number } {
+  const { edit, firstInsertedLine } = buildInsertBlockEdit(
+    lfText,
+    lineIndex,
+    insertLineIndex,
+    [newLine],
+    prependBlankLine,
+  );
+  return { edit, targetHeaderLine: firstInsertedLine };
 }
 
 function shiftHeadingLines(
@@ -1228,6 +1251,538 @@ function planDeleteNodeKeepChildren(
   };
 }
 
+function trimOuterBlankLines(rawText: string): readonly string[] {
+  const lf = rawText.replace(/\r\n/g, '\n').replace(/\r/g, '\n');
+  const lines = lf.split('\n');
+  let start = 0;
+  let end = lines.length;
+  while (start < end && isBlankLine(lines[start] ?? '')) {
+    start += 1;
+  }
+  while (end > start && isBlankLine(lines[end - 1] ?? '')) {
+    end -= 1;
+  }
+  return lines.slice(start, end);
+}
+
+function isDescendantOrSelf(
+  doc: MindMapDocument,
+  candidateId: string,
+  ancestorId: string,
+): boolean {
+  let cursor: string | null = candidateId;
+  while (cursor !== null) {
+    if (cursor === ancestorId) return true;
+    cursor = doc.nodes.get(cursor)?.parentId ?? null;
+  }
+  return false;
+}
+
+/**
+ * Extracts the exact Markdown lines belonging to a topic subtree (used for branch copy/cut).
+ */
+export function extractSubtreeMarkdown(rawText: string, node: TopicNode): string {
+  const lfText = rawText.replace(/\r\n/g, '\n').replace(/\r/g, '\n');
+  const lineIndex = indexLfLines(lfText);
+  return lineIndex.lines.slice(node.subtreeRange.startLine, node.subtreeRange.endLine).join('\n');
+}
+
+function planUpdateNote(
+  lfText: string,
+  doc: MindMapDocument,
+  lineIndex: LineIndex,
+  target: TopicNode,
+  rawNoteBody: string,
+): PlanResult {
+  const trimmedLines = trimOuterBlankLines(rawNoteBody);
+  const focusHint: PatchFocusHint = {
+    targetHeaderLine: target.kind === 'central-virtual' ? -1 : target.headerLine,
+    expectedTitleRaw: target.titleRaw,
+  };
+
+  if (trimmedLines.length === 0) {
+    if (target.noteRange === null) {
+      return reject('boundary-no-op', 'Topic note is already empty.');
+    }
+    const deleteRange = lineSpanDeleteOffsets(
+      lfText,
+      lineIndex,
+      target.noteRange.startLine,
+      target.noteRange.endLine,
+    );
+    return {
+      ok: true,
+      edits: [{ range: deleteRange, replacement: '' }],
+      focusHint,
+    };
+  }
+
+  // Validate note body strictly contains only plain paragraphs / blank lines
+  const scanned = scanBlocks(trimmedLines);
+  if (
+    scanned.unclosedFrontmatter ||
+    scanned.malformedFrontmatter ||
+    scanned.items.some((item) => item.kind !== 'paragraph-line' && item.kind !== 'blank')
+  ) {
+    return reject(
+      'invalid-note-block-syntax',
+      'Topic notes may only contain plain paragraphs (headings, lists, code fences, quotes, tables, math, or HTML must be edited in Markdown).',
+    );
+  }
+
+  const normalizedLines =
+    target.kind === 'list-item'
+      ? trimmedLines.map((line) => (isBlankLine(line) ? '' : line.replace(/^[ \t]+/, '')))
+      : trimmedLines.map((line) => (isBlankLine(line) ? '' : line));
+  const normalizedPlainText = normalizedLines.join('\n');
+  if (target.noteRange !== null && target.noteText === normalizedPlainText) {
+    return reject('boundary-no-op', 'Topic note is unchanged.');
+  }
+
+  let noteIndent = '';
+  if (target.kind === 'list-item') {
+    if (target.noteRange !== null) {
+      for (let ln = target.noteRange.startLine; ln < target.noteRange.endLine; ln += 1) {
+        const existingLine = lineIndex.lines[ln] ?? '';
+        if (!isBlankLine(existingLine)) {
+          noteIndent = getLeadingWhitespace(existingLine);
+          break;
+        }
+      }
+    }
+    if (noteIndent.length === 0) {
+      const computed = buildFirstChildIndent(doc, lineIndex, target);
+      if (computed === null) {
+        return reject(
+          'invariant-check-failed',
+          'Could not compute list continuation indentation for topic note.',
+        );
+      }
+      noteIndent = computed;
+    }
+  }
+
+  const formattedLines = normalizedLines.map((line) =>
+    line.length === 0 ? '' : `${noteIndent}${line}`,
+  );
+
+  if (target.noteRange !== null) {
+    const replaceRange = lineSpanContentOffsets(
+      lfText,
+      lineIndex,
+      target.noteRange.startLine,
+      target.noteRange.endLine,
+    );
+    return {
+      ok: true,
+      edits: [{ range: replaceRange, replacement: formattedLines.join('\n') }],
+      focusHint,
+    };
+  }
+
+  let insertLineIndex: number;
+  if (target.kind === 'central-virtual') {
+    const fm = target.unmappedBlocks.find((b) => b.kind === 'frontmatter');
+    insertLineIndex = fm ? fm.range.endLine : 0;
+  } else {
+    insertLineIndex = target.headerLine + 1;
+  }
+
+  const { edit } = buildInsertBlockEdit(lfText, lineIndex, insertLineIndex, formattedLines, false);
+  return {
+    ok: true,
+    edits: [edit],
+    focusHint,
+  };
+}
+
+function planReparent(
+  lfText: string,
+  doc: MindMapDocument,
+  lineIndex: LineIndex,
+  target: TopicNode,
+  targetParentId: string,
+  index: number,
+): PlanResult {
+  if (target.id === doc.rootId || target.parentId === null || target.kind === 'central-virtual') {
+    return reject('cannot-modify-root', 'Cannot move or reparent the central topic.');
+  }
+
+  const targetParent = doc.nodes.get(targetParentId);
+  if (!targetParent) {
+    return reject('stale-target', 'Target parent topic no longer exists.');
+  }
+  if (isDescendantOrSelf(doc, targetParentId, target.id)) {
+    return reject('boundary-no-op', 'Cannot move a topic into itself or one of its descendants.');
+  }
+
+  const existingChildren = targetParent.childIds
+    .map((id) => doc.nodes.get(id))
+    .filter((n): n is TopicNode => n !== undefined);
+  const clampedIndex = Math.max(0, Math.min(index, existingChildren.length));
+
+  if (target.parentId === targetParentId) {
+    const curIdx = existingChildren.findIndex((c) => c.id === target.id);
+    if (curIdx !== -1 && (clampedIndex === curIdx || clampedIndex === curIdx + 1)) {
+      return reject('boundary-no-op', 'Topic is already at the requested position.');
+    }
+  }
+
+  const { startLine, endLine } = target.subtreeRange;
+  let transformedLines: readonly string[];
+
+  if (target.kind === 'heading') {
+    if (targetParent.kind === 'list-item') {
+      return reject(
+        'mixed-heading-list-conversion',
+        'Cannot move a heading topic under a list item.',
+      );
+    }
+
+    // Inserting a heading before list-item siblings under a heading parent would hijack them.
+    for (let i = clampedIndex; i < existingChildren.length; i += 1) {
+      const sib = existingChildren[i];
+      if (sib && sib.id !== target.id && sib.kind === 'list-item') {
+        return reject(
+          'mixed-heading-list-conversion',
+          'Cannot place a heading before list item children of the same parent.',
+        );
+      }
+    }
+
+    const otherHeadingChild = existingChildren.find(
+      (c) => c.id !== target.id && c.kind === 'heading' && c.headingLevel !== null,
+    );
+    const minLevel =
+      targetParent.kind === 'central-virtual'
+        ? 2
+        : targetParent.headingLevel !== null
+          ? targetParent.headingLevel + 1
+          : 2;
+    const desiredLevel = otherHeadingChild?.headingLevel ?? minLevel;
+    const currentLevel = target.headingLevel ?? 2;
+    const delta = desiredLevel - currentLevel;
+
+    if (delta !== 0) {
+      const shifted = shiftHeadingLines(
+        lineIndex.lines,
+        startLine,
+        endLine,
+        doc,
+        delta,
+        minLevel,
+      );
+      if (!shifted.ok) return shifted;
+      transformedLines = shifted.nextLines;
+    } else {
+      transformedLines = lineIndex.lines.slice(startLine, endLine);
+    }
+  } else {
+    // List item target: cannot be placed after heading siblings under a heading/root parent
+    if (targetParent.kind !== 'list-item') {
+      for (let i = 0; i < clampedIndex; i += 1) {
+        const sib = existingChildren[i];
+        if (sib && sib.id !== target.id && sib.kind === 'heading') {
+          return reject(
+            'mixed-heading-list-conversion',
+            'Cannot place a list item after heading children of the same parent.',
+          );
+        }
+      }
+    }
+
+    const otherListChild = existingChildren.find(
+      (c) => c.id !== target.id && c.kind === 'list-item',
+    );
+    let targetIndent: string | null;
+    if (otherListChild) {
+      targetIndent = getLeadingWhitespace(lineIndex.lines[otherListChild.headerLine] ?? '');
+    } else if (targetParent.kind === 'list-item') {
+      targetIndent = buildFirstChildIndent(doc, lineIndex, targetParent);
+    } else {
+      targetIndent = '';
+    }
+
+    if (targetIndent === null) {
+      return reject(
+        'invariant-check-failed',
+        'Could not compute valid list indentation under the target parent.',
+      );
+    }
+
+    const currentIndent = getLeadingWhitespace(lineIndex.lines[startLine] ?? '');
+    if (currentIndent !== targetIndent) {
+      if (subtreeHasIndentSensitiveUnmapped(doc, target)) {
+        return reject(
+          'indent-sensitive-unmapped-block',
+          'Cannot move a list branch containing an indent-sensitive preserved block to a different indent level.',
+        );
+      }
+      const reindented = reindentListLines(
+        lineIndex.lines,
+        startLine,
+        endLine,
+        currentIndent,
+        targetIndent,
+      );
+      if (!reindented.ok) return reindented;
+      transformedLines = reindented.nextLines;
+    } else {
+      transformedLines = lineIndex.lines.slice(startLine, endLine);
+    }
+  }
+
+  let insertLineIndex: number;
+  if (existingChildren.length === 0) {
+    insertLineIndex =
+      targetParent.kind === 'central-virtual'
+        ? lineIndex.lines.length
+        : targetParent.subtreeRange.endLine;
+  } else if (clampedIndex < existingChildren.length) {
+    insertLineIndex = existingChildren[clampedIndex]?.headerLine ?? lineIndex.lines.length;
+  } else {
+    insertLineIndex =
+      existingChildren[existingChildren.length - 1]?.subtreeRange.endLine ??
+      lineIndex.lines.length;
+  }
+
+  const prependBlank =
+    insertLineIndex > 0 &&
+    insertLineIndex !== endLine &&
+    needsBlankLineBeforeInsert(doc, insertLineIndex);
+
+  if (insertLineIndex <= startLine) {
+    // Moving UP: single minimal bounding span [insertLineIndex, endLine)
+    const middleLines = lineIndex.lines.slice(insertLineIndex, startLine);
+    const nextSpanLines = prependBlank
+      ? ['', ...transformedLines, ...middleLines]
+      : [...transformedLines, ...middleLines];
+    const spanRange = lineSpanContentOffsets(lfText, lineIndex, insertLineIndex, endLine);
+    return {
+      ok: true,
+      edits: [{ range: spanRange, replacement: nextSpanLines.join('\n') }],
+      focusHint: {
+        targetHeaderLine: insertLineIndex + (prependBlank ? 1 : 0),
+        expectedTitleRaw: target.titleRaw,
+      },
+    };
+  }
+
+  if (insertLineIndex >= endLine) {
+    // Moving DOWN: single minimal bounding span [startLine, insertLineIndex)
+    const middleLines = lineIndex.lines.slice(endLine, insertLineIndex);
+    const nextSpanLines = prependBlank
+      ? [...middleLines, '', ...transformedLines]
+      : [...middleLines, ...transformedLines];
+    const spanRange = lineSpanContentOffsets(lfText, lineIndex, startLine, insertLineIndex);
+    return {
+      ok: true,
+      edits: [{ range: spanRange, replacement: nextSpanLines.join('\n') }],
+      focusHint: {
+        targetHeaderLine: startLine + middleLines.length + (prependBlank ? 1 : 0),
+        expectedTitleRaw: target.titleRaw,
+      },
+    };
+  }
+
+  return reject('invariant-check-failed', 'Invalid reparent insertion line inside target subtree.');
+}
+
+function planPasteBranch(
+  lfText: string,
+  doc: MindMapDocument,
+  lineIndex: LineIndex,
+  target: TopicNode,
+  rawSubtreeMarkdown: string,
+): PlanResult {
+  const snippetLines = trimOuterBlankLines(rawSubtreeMarkdown);
+  if (snippetLines.length === 0) {
+    return reject('empty-title', 'Clipboard branch content is empty.');
+  }
+
+  const firstLine = snippetLines[0] ?? '';
+  const isHeadingSnippet = ATX_HEADING_PREFIX_RE.test(firstLine);
+  const isListSnippet = listItemContentColumnsOfLine(firstLine) !== null;
+
+  if (!isHeadingSnippet && !isListSnippet) {
+    if (snippetLines.length === 1) {
+      return planInsertChild(lfText, doc, lineIndex, target, firstLine, 'end');
+    }
+    return reject(
+      'invalid-note-block-syntax',
+      'Multi-line clipboard text must be a Markdown heading or list branch to paste as a subtree.',
+    );
+  }
+
+  // Dedent copied list subtrees to column 0 before parsing so deeply nested items (4+ spaces)
+  // are never misclassified as CommonMark indented code blocks.
+  const snippetBaseIndent = isListSnippet ? getLeadingWhitespace(firstLine) : '';
+  let normalizedSnippetLines: readonly string[] = snippetLines;
+  if (isListSnippet && snippetBaseIndent.length > 0) {
+    const dedented = reindentListLines(
+      snippetLines,
+      0,
+      snippetLines.length,
+      snippetBaseIndent,
+      '',
+    );
+    if (!dedented.ok) return dedented;
+    normalizedSnippetLines = dedented.nextLines;
+  }
+
+  const snippetText = `${normalizedSnippetLines.join('\n')}\n`;
+  const parsedSnippet = parseMarkdownToMap(snippetText, '__paste__');
+  if (parsedSnippet.status !== 'ok' || parsedSnippet.document.readOnlyReasons.length > 0) {
+    return reject(
+      'invariant-check-failed',
+      'Clipboard branch could not be safely parsed as a valid Markdown subtree.',
+    );
+  }
+  const snippetDoc = parsedSnippet.document;
+  const firstTopNode = [...snippetDoc.nodes.values()].find(
+    (n) => n.kind !== 'central-virtual' && n.headerLine === 0,
+  );
+  if (!firstTopNode) {
+    return reject('invariant-check-failed', 'Clipboard branch did not produce a valid root topic.');
+  }
+
+  const existingChildren = target.childIds
+    .map((id) => doc.nodes.get(id))
+    .filter((n): n is TopicNode => n !== undefined);
+
+  let linesToInsert: readonly string[];
+  let insertLineIndex: number;
+
+  if (isHeadingSnippet) {
+    if (target.kind === 'list-item') {
+      return reject(
+        'mixed-heading-list-conversion',
+        'Cannot paste a heading branch under a list item.',
+      );
+    }
+
+    let minHeadingLevel = 6;
+    for (const node of snippetDoc.nodes.values()) {
+      if (node.kind === 'heading' && node.headingLevel !== null) {
+        if (node.headingLevel < minHeadingLevel) {
+          minHeadingLevel = node.headingLevel;
+        }
+      }
+    }
+
+    const existingHeadingChild = existingChildren.find(
+      (c) => c.kind === 'heading' && c.headingLevel !== null,
+    );
+    const minAllowedLevel =
+      target.kind === 'central-virtual'
+        ? 2
+        : target.headingLevel !== null
+          ? target.headingLevel + 1
+          : 2;
+    const desiredLevel = existingHeadingChild?.headingLevel ?? minAllowedLevel;
+    const delta = desiredLevel - minHeadingLevel;
+
+    if (delta !== 0) {
+      const shifted = shiftHeadingLines(
+        normalizedSnippetLines,
+        0,
+        normalizedSnippetLines.length,
+        snippetDoc,
+        delta,
+        minAllowedLevel,
+      );
+      if (!shifted.ok) return shifted;
+      linesToInsert = shifted.nextLines;
+    } else {
+      linesToInsert = normalizedSnippetLines;
+    }
+
+    insertLineIndex =
+      target.kind === 'central-virtual' ? lineIndex.lines.length : target.subtreeRange.endLine;
+  } else {
+    // List snippet: ensure no headings inside list snippet
+    for (const node of snippetDoc.nodes.values()) {
+      if (node.kind === 'heading') {
+        return reject(
+          'mixed-heading-list-conversion',
+          'Cannot paste a list branch containing Markdown headings.',
+        );
+      }
+    }
+
+    const existingListChildren = existingChildren.filter((c) => c.kind === 'list-item');
+    const firstHeadingChild = existingChildren.find((c) => c.kind === 'heading');
+    const lastListChild = existingListChildren[existingListChildren.length - 1];
+
+    let targetChildIndent: string | null;
+    if (lastListChild) {
+      targetChildIndent = getLeadingWhitespace(lineIndex.lines[lastListChild.headerLine] ?? '');
+    } else if (target.kind === 'list-item') {
+      targetChildIndent = buildFirstChildIndent(doc, lineIndex, target);
+    } else {
+      targetChildIndent = '';
+    }
+
+    if (targetChildIndent === null) {
+      return reject(
+        'invariant-check-failed',
+        'Could not compute valid list indentation for pasted branch.',
+      );
+    }
+
+    if (snippetBaseIndent !== targetChildIndent) {
+      const hasIndentSensitive = [...snippetDoc.nodes.values()].some((n) =>
+        n.unmappedBlocks.some((b) => b.indentSensitive),
+      );
+      if (hasIndentSensitive) {
+        return reject(
+          'indent-sensitive-unmapped-block',
+          'Cannot reindent a pasted list branch containing an indent-sensitive preserved block.',
+        );
+      }
+      const reindented = reindentListLines(
+        normalizedSnippetLines,
+        0,
+        normalizedSnippetLines.length,
+        '',
+        targetChildIndent,
+      );
+      if (!reindented.ok) return reindented;
+      linesToInsert = reindented.nextLines;
+    } else {
+      linesToInsert = snippetLines;
+    }
+
+    if (lastListChild) {
+      insertLineIndex = lastListChild.subtreeRange.endLine;
+    } else if (firstHeadingChild) {
+      // Place pasted list branch before heading children so it attaches to `target`
+      insertLineIndex = firstHeadingChild.headerLine;
+    } else {
+      insertLineIndex =
+        target.kind === 'central-virtual' ? lineIndex.lines.length : target.subtreeRange.endLine;
+    }
+  }
+
+  const prependBlank = needsBlankLineBeforeInsert(doc, insertLineIndex);
+  const { edit, firstInsertedLine } = buildInsertBlockEdit(
+    lfText,
+    lineIndex,
+    insertLineIndex,
+    linesToInsert,
+    prependBlank,
+  );
+
+  return {
+    ok: true,
+    edits: [edit],
+    focusHint: {
+      targetHeaderLine: firstInsertedLine,
+      expectedTitleRaw: firstTopNode.titleRaw,
+    },
+  };
+}
+
 /**
  * Generates minimal UTF-16 TextEdits for a SemanticCommand against LF-normalized text.
  */
@@ -1246,6 +1801,8 @@ export function planPatch(
   switch (command.type) {
     case 'rename':
       return planRename(lfText, lineIndex, guardCheck.target, command.newTitle);
+    case 'updateNote':
+      return planUpdateNote(lfText, doc, lineIndex, guardCheck.target, command.newNoteBody);
     case 'insertChild':
       return planInsertChild(
         lfText,
@@ -1283,6 +1840,15 @@ export function planPatch(
       return planIndent(lfText, doc, lineIndex, guardCheck.target);
     case 'outdent':
       return planOutdent(lfText, doc, lineIndex, guardCheck.target);
+    case 'reparent':
+      return planReparent(
+        lfText,
+        doc,
+        lineIndex,
+        guardCheck.target,
+        command.targetParentId,
+        command.index,
+      );
     case 'deleteBranch':
       return planDeleteBranch(
         lfText,
@@ -1293,13 +1859,12 @@ export function planPatch(
       );
     case 'deleteNodeKeepChildren':
       return planDeleteNodeKeepChildren(lfText, doc, lineIndex, guardCheck.target);
-    case 'updateNote':
-    case 'renameAndInsertChild':
-    case 'reparent':
     case 'pasteBranch':
+      return planPasteBranch(lfText, doc, lineIndex, guardCheck.target, command.subtreeMarkdown);
+    case 'renameAndInsertChild':
       return reject(
         'unsupported-command',
-        `Command "${command.type}" is not enabled yet (scheduled for M2-c / M3).`,
+        `Command "${command.type}" is not enabled yet.`,
       );
   }
 }

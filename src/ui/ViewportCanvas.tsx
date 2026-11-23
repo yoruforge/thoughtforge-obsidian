@@ -1,4 +1,5 @@
 import {
+  useCallback,
   useEffect,
   useMemo,
   useRef,
@@ -20,6 +21,7 @@ import type {
   TopicLink,
 } from '../core/model';
 import { DomNodeLayer } from './DomNodeLayer';
+import { resolveDropTarget, type DropTarget } from './dragDrop';
 import type { EditingSession } from './editSession';
 import type { GuardableKeyEvent } from './imeGuard';
 import { SvgEdgeLayer } from './SvgEdgeLayer';
@@ -60,6 +62,7 @@ export interface ViewportCanvasProps {
   readonly onCancelEdit: () => void;
   readonly onDiscardEdit: (unsavedValue: string) => void;
   readonly onToggleTask: (nodeId: string) => void;
+  readonly onReparentNode?: (nodeId: string, targetParentId: string, index: number) => void;
 }
 
 const MIN_ZOOM = 0.15;
@@ -100,6 +103,7 @@ export function ViewportCanvas({
   onCancelEdit,
   onDiscardEdit,
   onToggleTask,
+  onReparentNode,
 }: ViewportCanvasProps) {
   const containerRef = useRef<HTMLDivElement | null>(null);
   const [viewportSize, setViewportSize] = useState<ViewportSize>({ width: 960, height: 640 });
@@ -114,6 +118,56 @@ export function ViewportCanvas({
     readonly originCameraX: number;
     readonly originCameraY: number;
   } | null>(null);
+  const pendingNodeDragRef = useRef<{
+    readonly pointerId: number;
+    readonly nodeId: string;
+    readonly label: string;
+    readonly startClientX: number;
+    readonly startClientY: number;
+  } | null>(null);
+  const [activeNodeDrag, setActiveNodeDrag] = useState<{
+    readonly pointerId: number;
+    readonly nodeId: string;
+    readonly label: string;
+    readonly viewportX: number;
+    readonly viewportY: number;
+    readonly dropTarget: DropTarget | null;
+  } | null>(null);
+  const activeNodeDragRef = useRef(activeNodeDrag);
+  activeNodeDragRef.current = activeNodeDrag;
+  const suppressNextNodeClickRef = useRef(false);
+
+  const isNodeDragging = activeNodeDrag !== null;
+
+  // Cancel active node drag on Escape
+  useEffect(() => {
+    if (!isNodeDragging) return;
+    const ownerDoc = containerRef.current?.ownerDocument ?? window.document;
+    const handleKeyDown = (event: KeyboardEvent): void => {
+      if (event.key === 'Escape') {
+        event.preventDefault();
+        event.stopPropagation();
+        pendingNodeDragRef.current = null;
+        setActiveNodeDrag(null);
+      }
+    };
+    ownerDoc.addEventListener('keydown', handleKeyDown, true);
+    return () => ownerDoc.removeEventListener('keydown', handleKeyDown, true);
+  }, [isNodeDragging]);
+
+  const handleStartNodeDrag = useCallback(
+    (nodeId: string, label: string, pointerId: number, clientX: number, clientY: number) => {
+      if (!canEdit || !onReparentNode) return;
+      pendingNodeDragRef.current = {
+        pointerId,
+        nodeId,
+        label,
+        startClientX: clientX,
+        startClientY: clientY,
+      };
+    },
+    [canEdit, onReparentNode],
+  );
 
   useEffect(() => {
     const el = containerRef.current;
@@ -191,6 +245,72 @@ export function ViewportCanvas({
   };
 
   const handlePointerMove = (event: PointerEvent<HTMLDivElement>): void => {
+    const pending = pendingNodeDragRef.current;
+    if (pending && pending.pointerId === event.pointerId) {
+      if (event.pointerType === 'mouse' && (event.buttons & 1) === 0) {
+        pendingNodeDragRef.current = null;
+        return;
+      }
+      const dist = Math.hypot(
+        event.clientX - pending.startClientX,
+        event.clientY - pending.startClientY,
+      );
+      if (dist >= 6) {
+        const rect = event.currentTarget.getBoundingClientRect();
+        const viewportX = event.clientX - rect.left;
+        const viewportY = event.clientY - rect.top;
+        const worldX = (viewportX - cameraRef.current.x) / cameraRef.current.zoom;
+        const worldY = (viewportY - cameraRef.current.y) / cameraRef.current.zoom;
+        const dropTarget = resolveDropTarget(document, layout, pending.nodeId, worldX, worldY);
+        pendingNodeDragRef.current = null;
+        suppressNextNodeClickRef.current = true;
+        try {
+          event.currentTarget.setPointerCapture(event.pointerId);
+        } catch {
+          // Pointer capture may fail in synthetic pointer tests; drag still works.
+        }
+        setActiveNodeDrag({
+          pointerId: pending.pointerId,
+          nodeId: pending.nodeId,
+          label: pending.label,
+          viewportX,
+          viewportY,
+          dropTarget,
+        });
+      }
+      return;
+    }
+
+    const currentNodeDrag = activeNodeDragRef.current;
+    if (currentNodeDrag && currentNodeDrag.pointerId === event.pointerId) {
+      if (event.pointerType === 'mouse' && (event.buttons & 1) === 0) {
+        if (event.currentTarget.hasPointerCapture(event.pointerId)) {
+          event.currentTarget.releasePointerCapture(event.pointerId);
+        }
+        setActiveNodeDrag(null);
+        return;
+      }
+      const rect = event.currentTarget.getBoundingClientRect();
+      const viewportX = event.clientX - rect.left;
+      const viewportY = event.clientY - rect.top;
+      const worldX = (viewportX - cameraRef.current.x) / cameraRef.current.zoom;
+      const worldY = (viewportY - cameraRef.current.y) / cameraRef.current.zoom;
+      const dropTarget = resolveDropTarget(
+        document,
+        layout,
+        currentNodeDrag.nodeId,
+        worldX,
+        worldY,
+      );
+      setActiveNodeDrag({
+        ...currentNodeDrag,
+        viewportX,
+        viewportY,
+        dropTarget,
+      });
+      return;
+    }
+
     const drag = dragStateRef.current;
     if (!drag || drag.pointerId !== event.pointerId) return;
     onCameraChange({
@@ -201,6 +321,29 @@ export function ViewportCanvas({
   };
 
   const handlePointerUp = (event: PointerEvent<HTMLDivElement>): void => {
+    if (pendingNodeDragRef.current?.pointerId === event.pointerId) {
+      pendingNodeDragRef.current = null;
+    }
+
+    const currentNodeDrag = activeNodeDragRef.current;
+    if (currentNodeDrag && currentNodeDrag.pointerId === event.pointerId) {
+      if (event.currentTarget.hasPointerCapture(event.pointerId)) {
+        event.currentTarget.releasePointerCapture(event.pointerId);
+      }
+      setActiveNodeDrag(null);
+      if (event.type === 'pointerup' && currentNodeDrag.dropTarget && onReparentNode) {
+        onReparentNode(
+          currentNodeDrag.nodeId,
+          currentNodeDrag.dropTarget.targetParentId,
+          currentNodeDrag.dropTarget.index,
+        );
+      }
+      setTimeout(() => {
+        suppressNextNodeClickRef.current = false;
+      }, 0);
+      return;
+    }
+
     const drag = dragStateRef.current;
     if (!drag || drag.pointerId !== event.pointerId) return;
     if (event.currentTarget.hasPointerCapture(event.pointerId)) {
@@ -254,7 +397,12 @@ export function ViewportCanvas({
           palette={palette}
           rainbowBranches={rainbowBranches}
           colorStyle={colorStyle}
-          onSelectNode={(id) => onSelectNode(id)}
+          draggedNodeId={activeNodeDrag?.nodeId ?? null}
+          dropTarget={activeNodeDrag?.dropTarget ?? null}
+          onSelectNode={(id) => {
+            if (suppressNextNodeClickRef.current) return;
+            onSelectNode(id);
+          }}
           onToggleCollapse={onToggleCollapse}
           onOpenPopover={onOpenPopover}
           onOpenLink={onOpenLink}
@@ -265,8 +413,21 @@ export function ViewportCanvas({
           onCancelEdit={onCancelEdit}
           onDiscardEdit={onDiscardEdit}
           onToggleTask={onToggleTask}
+          onStartNodeDrag={handleStartNodeDrag}
         />
       </div>
+
+      {activeNodeDrag !== null && (
+        <div
+          className="ito-drag-ghost"
+          style={{
+            left: `${activeNodeDrag.viewportX + 14}px`,
+            top: `${activeNodeDrag.viewportY + 12}px`,
+          }}
+        >
+          {activeNodeDrag.label}
+        </div>
+      )}
     </div>
   );
 }

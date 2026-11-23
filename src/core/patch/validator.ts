@@ -71,6 +71,24 @@ function collectUnmappedSnapshots(
   return rawBlocks.map(({ kind, rawSlice }) => ({ kind, rawSlice }));
 }
 
+function areUnmappedSnapshotsSubset(
+  before: readonly UnmappedSnapshot[],
+  after: readonly UnmappedSnapshot[],
+): boolean {
+  const counts = new Map<string, number>();
+  for (const item of after) {
+    const key = `${item.kind}\0${item.rawSlice}`;
+    counts.set(key, (counts.get(key) ?? 0) + 1);
+  }
+  for (const item of before) {
+    const key = `${item.kind}\0${item.rawSlice}`;
+    const prev = counts.get(key) ?? 0;
+    if (prev <= 0) return false;
+    counts.set(key, prev - 1);
+  }
+  return true;
+}
+
 function areUnmappedSnapshotsEqual(
   before: readonly UnmappedSnapshot[],
   after: readonly UnmappedSnapshot[],
@@ -176,11 +194,18 @@ export function validatePatchedDocument(
     command.type === 'deleteBranch' && command.confirmedUnmapped === true
       ? collectSubtreeNodeIds(beforeDoc, beforeTarget.id)
       : undefined;
-  const allowReorderedUnmapped = command.type === 'moveSibling' || command.type === 'outdent';
+  const allowReorderedUnmapped =
+    command.type === 'moveSibling' ||
+    command.type === 'outdent' ||
+    command.type === 'reparent';
 
   const beforeUnmapped = collectUnmappedSnapshots(beforeLfText, beforeDoc, excludedForUnmapped);
   const afterUnmapped = collectUnmappedSnapshots(afterLfText, afterDoc);
-  if (!areUnmappedSnapshotsEqual(beforeUnmapped, afterUnmapped, allowReorderedUnmapped)) {
+  const unmappedValid =
+    command.type === 'pasteBranch'
+      ? areUnmappedSnapshotsSubset(beforeUnmapped, afterUnmapped)
+      : areUnmappedSnapshotsEqual(beforeUnmapped, afterUnmapped, allowReorderedUnmapped);
+  if (!unmappedValid) {
     return fail(
       'invariant-check-failed',
       'Dry-run verification detected an unintended change to preserved unmapped blocks.',
@@ -373,6 +398,98 @@ export function validatePatchedDocument(
     }
     if (focusedNode.childIds.length !== beforeTarget.childIds.length) {
       return fail('invariant-check-failed', 'Outdented topic child count changed unexpectedly.');
+    }
+    return { ok: true, nextDocument: afterDoc, focusNodeId: focusedNode.id };
+  }
+
+  if (command.type === 'updateNote') {
+    if (afterDoc.topicCount !== beforeDoc.topicCount) {
+      return fail('invariant-check-failed', 'updateNote unexpectedly changed the topic count.');
+    }
+    const lfBody = command.newNoteBody.replace(/\r\n/g, '\n').replace(/\r/g, '\n');
+    const bodyLines = lfBody.split('\n');
+    let start = 0;
+    let end = bodyLines.length;
+    while (start < end && /^[ \t]*$/.test(bodyLines[start] ?? '')) start += 1;
+    while (end > start && /^[ \t]*$/.test(bodyLines[end - 1] ?? '')) end -= 1;
+    const expectedNoteText =
+      start < end
+        ? bodyLines
+            .slice(start, end)
+            .map((line) => {
+              if (/^[ \t]*$/.test(line)) return '';
+              return beforeTarget.kind === 'list-item' ? line.replace(/^[ \t]+/, '') : line;
+            })
+            .join('\n')
+        : null;
+
+    if (focusedNode.noteText !== expectedNoteText) {
+      return fail(
+        'invalid-note-block-syntax',
+        'Reparsed topic note did not match the requested plain paragraph content.',
+      );
+    }
+    if (
+      focusedNode.kind !== beforeTarget.kind ||
+      focusedNode.preservedPrefix !== beforeTarget.preservedPrefix ||
+      focusedNode.preservedBlockId !== beforeTarget.preservedBlockId
+    ) {
+      return fail('invariant-check-failed', 'updateNote altered protected topic metadata.');
+    }
+    return { ok: true, nextDocument: afterDoc, focusNodeId: focusedNode.id };
+  }
+
+  if (command.type === 'reparent') {
+    if (afterDoc.topicCount !== beforeDoc.topicCount) {
+      return fail('invariant-check-failed', 'reparent unexpectedly changed the topic count.');
+    }
+    if (focusedNode.childIds.length !== beforeTarget.childIds.length) {
+      return fail(
+        'invariant-check-failed',
+        'Reparented topic lost or absorbed children unexpectedly.',
+      );
+    }
+    const beforeTargetParent = beforeDoc.nodes.get(command.targetParentId);
+    const actualParent =
+      focusedNode.parentId !== null ? afterDoc.nodes.get(focusedNode.parentId) : undefined;
+    if (!beforeTargetParent || !actualParent) {
+      return fail('invariant-check-failed', 'Reparented topic parent could not be verified.');
+    }
+    if (beforeTargetParent.kind === 'central-virtual') {
+      if (actualParent.id !== afterDoc.rootId) {
+        return fail('invariant-check-failed', 'Reparented topic did not attach to the root.');
+      }
+    } else if (
+      actualParent.kind !== beforeTargetParent.kind ||
+      actualParent.titleRaw !== beforeTargetParent.titleRaw
+    ) {
+      return fail(
+        'invariant-check-failed',
+        'Reparented topic attached to an unexpected parent after reparse.',
+      );
+    }
+    const expectedParentChildCount =
+      beforeTargetParent.childIds.length + (beforeTarget.parentId === command.targetParentId ? 0 : 1);
+    if (actualParent.childIds.length !== expectedParentChildCount) {
+      return fail(
+        'invariant-check-failed',
+        'Target parent child count did not match expected value after reparent.',
+      );
+    }
+    return { ok: true, nextDocument: afterDoc, focusNodeId: focusedNode.id };
+  }
+
+  if (command.type === 'pasteBranch') {
+    if (afterDoc.topicCount <= beforeDoc.topicCount) {
+      return fail('invariant-check-failed', 'pasteBranch did not add any topics.');
+    }
+    const actualParent =
+      focusedNode.parentId !== null ? afterDoc.nodes.get(focusedNode.parentId) : undefined;
+    if (!parentMatchesReference(afterDoc, actualParent, beforeTarget)) {
+      return fail(
+        'invariant-check-failed',
+        'Pasted branch did not attach to the selected parent topic.',
+      );
     }
     return { ok: true, nextDocument: afterDoc, focusNodeId: focusedNode.id };
   }

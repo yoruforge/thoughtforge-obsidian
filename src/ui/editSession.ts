@@ -5,6 +5,16 @@ export interface EditingSession {
   readonly filePath: string;
   readonly nodeId: string;
   readonly initialTitleRaw: string;
+  /** Optional restored draft text to prefill into InlineEditor while keeping the original CAS guard. */
+  readonly draftPrefillValue?: string;
+  readonly guard: PatchGuard;
+}
+
+export interface NoteEditingSession {
+  readonly filePath: string;
+  readonly nodeId: string;
+  readonly targetTitleRaw: string;
+  readonly initialNoteText: string;
   readonly guard: PatchGuard;
 }
 
@@ -25,12 +35,55 @@ export function createEditingSession(
   filePath: string,
   doc: MindMapDocument,
   node: TopicNode,
+  draftPrefillValue?: string,
 ): EditingSession {
   return {
     filePath,
     nodeId: node.id,
     initialTitleRaw: node.titleRaw,
+    draftPrefillValue,
     guard: buildPatchGuard(doc, node),
+  };
+}
+
+export function createNoteEditingSession(
+  filePath: string,
+  doc: MindMapDocument,
+  node: TopicNode,
+): NoteEditingSession {
+  return {
+    filePath,
+    nodeId: node.id,
+    targetTitleRaw: node.titleRaw,
+    initialNoteText: node.noteText ?? '',
+    guard: buildPatchGuard(doc, node),
+  };
+}
+
+export function isNoteEditingSessionValid(
+  session: NoteEditingSession | null,
+  currentFilePath: string,
+  currentDoc: MindMapDocument | null,
+): session is NoteEditingSession {
+  if (session === null || currentDoc === null) return false;
+  if (session.filePath !== currentFilePath) return false;
+  if (currentDoc.readOnlyReasons.length > 0) return false;
+  if (currentDoc.contentHash !== session.guard.expectedContentHash) return false;
+  return currentDoc.nodes.has(session.nodeId);
+}
+
+export function buildUpdateNoteCommand(
+  session: NoteEditingSession,
+  currentFilePath: string,
+  nextNoteBody: string,
+): Extract<SemanticCommand, { readonly type: 'updateNote' }> | null {
+  if (session.filePath !== currentFilePath) {
+    return null;
+  }
+  return {
+    type: 'updateNote',
+    guard: session.guard,
+    newNoteBody: nextNoteBody,
   };
 }
 

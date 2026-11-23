@@ -59,8 +59,8 @@
 
 - **M0（環境構築）**：完了（`package.json`, `pnpm-lock.yaml`, `pnpm-workspace.yaml`, `tsconfig.json`, `esbuild.config.mjs`, `eslint.config.mjs`, `vitest.config.ts`, `manifest.json`, `versions.json`, `styles.css`、ディレクトリ名 `thoughtforge-obsidian` へ統一）
 - **M1（閲覧 MVP）**：完了（PR #1 で `main` へマージ済み。Core パーサー・レイアウト・Focus/Quick Filter・ナビゲーション、React HTML+SVG ビューア、Obsidian `FileView`・コマンド・設定・i18n、`pnpm verify`・Obsidian 1.15.1 実機確認済み）
-- **M2-a（最小編集スライス）**：実装・実機検証完了（PR #2 `feat/m2a-minimal-edit-slice`、CI 通過。`src/core/patch/` の `rename`/`insertChild`/`insertSibling`、Dry-Run 再解析、`FileCoordinator` / `MarkdownEditorGate` / `ObsidianHostAdapter`、`InlineEditor` + `imeGuard` + `editSession`、`viewGuard` + `View.scope` `F2`、単体テスト計 9 ファイル 41 件、隔離 Obsidian 1.15.1 実機 15/15 項目通過）
-- **次フェーズ（M2-b → M2-ui → M2-c / M3）**：
-  - **M2-b（構造編集・削除 & Undo/Redo）**：`Shift+Tab`（新親） / `Delete`（枝削除） / `Cmd+Backspace`（子昇格削除） / `Cmd+Arrow`（並替・階層昇降） / `Cmd+Enter`（分割） / `Cmd+Z`・`Cmd+Shift+Z`（Undo/Redo） / タスク `[ ]`↔`[x]` 切替
-  - **M2-ui（Visual Design & UI/UX Polish）**：Section 3.5 のテーパード曲線・下線接続・カラーモード・レイアウト切替・Quick Style Popover・ノートホバープレビュー・構造化フィルタ・SVG バッジ・カメラ自動追従（ビュー設定はまず Vault 共通で `data.json` の `settings` へ保存）
-  - **M2-c / M3（下書き保護＋本文直接編集 & 実用化）**：`DraftStore`（`field: 'title' | 'note'` 下書き退避・回復）と同時公開する `NodePopover` 本文直接編集・`Cmd+Shift+T`、D&D 再配置・並替、枝コピペ
+- **M2-a（最小編集スライス）**：完了（PR #2 で `main` へマージ済み。`rename`/`insertChild`/`insertSibling`、Dry-Run 再解析、`FileCoordinator` / `MarkdownEditorGate`、`InlineEditor` + `imeGuard` + `editSession`、`viewGuard` + `View.scope` `F2`）
+- **M2-b（構造編集・削除 & Undo/Redo）**：完了（PR #4 で `main` へマージ済み。`Shift+Tab` 新親・`Delete` 枝削除・`Cmd+Backspace` 子昇格削除・`Cmd+Arrow` 並替/昇降・`Cmd+Enter` 分割・`Cmd+Z/Shift+Z` Undo/Redo・タスク `[ ]`↔`[x]` 切替）
+- **M2-ui（Visual Design & UI/UX Polish）**：完了（PR #5 で `main` へマージ済み。Section 3.5 のテーパード曲線・下線接続・カラーモード・3 レイアウト・Quick Style Popover・ノートホバープレビュー・構造化フィルタ・SVG バッジ・カメラ自動追従・フローティング HUD ステータスバー・非破壊トピック番号付け）
+- **M2-c / M3（下書き保護＋本文直接編集 & 実用化）**：実装中（`DraftStore` による `field: 'title' | 'note'` 下書き退避・回復、`NodePopover` トピックノート直接編集・`Cmd+Shift+T`、ポインタ D&D 再配置・並替、枝コピー/カット/ペースト、コマンドパレット登録）
+- **次フェーズ（M4 → M5）**：Obsidian Vault 連携強化・サイドカー視覚拡張検討（M4）、簡易プレゼン・エクスポート・`.itmz` インポート等（M5）
