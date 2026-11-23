@@ -67,4 +67,35 @@ describe('backlinks (M4-b exact topic resolution & deterministic sorting)', () =
       'c-general.md',
     ]);
   });
+
+  it('resolves repeated backlink checks across 2,000 headings x 100 notes x 10 trailing links without full-scan O(R*N) slowdown (Codex PR #17 P2)', () => {
+    const lines = ['# Target'];
+    for (let i = 1; i <= 2000; i += 1) {
+      lines.push(`## Section ${i}`);
+    }
+    const doc = parseOk(`${lines.join('\n')}\n`);
+    const lastHeading = [...doc.nodes.values()].find((n) => n.titleRaw === 'Section 2000');
+    expect(lastHeading).toBeDefined();
+    if (!lastHeading) return;
+
+    const trailingLinks: string[] = [];
+    for (let i = 1991; i <= 2000; i += 1) {
+      trailingLinks.push(`Target#Section ${i}`);
+    }
+
+    const startMs = performance.now();
+    let directHits = 0;
+    for (let note = 0; note < 100; note += 1) {
+      for (const link of trailingLinks) {
+        if (doesLinkTargetTopicNode(doc, link, lastHeading.id)) {
+          directHits += 1;
+        }
+      }
+    }
+    const elapsedMs = performance.now() - startMs;
+
+    expect(directHits).toBe(100);
+    // Indexed WeakMap lookup should stay well under 250ms even on slow CI runners (previously ~1,170ms)
+    expect(elapsedMs).toBeLessThan(250);
+  });
 });

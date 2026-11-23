@@ -2,12 +2,12 @@ import { describe, expect, it } from 'vitest';
 import { parseMarkdownToMap } from '../../src/core/parser';
 import {
   collectAncestorIds,
+  createHistoryAnchor,
   resolveHistoryAnchor,
   resolveTopicAtLine,
   resolveTopicBySubpath,
   splitLinkTargetSubpath,
 } from '../../src/core/view/topicResolver';
-import { buildAncestorPath, hasIdenticalStructuralSibling } from '../../src/sync/DraftStore';
 
 function parseOk(md: string) {
   const res = parseMarkdownToMap(md, 'Sample');
@@ -133,15 +133,8 @@ describe('topicResolver (M4-a cursor-to-map & link subpath resolution)', () => {
     expect(linkBefore).toBeDefined();
     if (!linkBefore) return;
 
-    const anchor = {
-      baseContentHash: beforeDoc.contentHash,
-      headerLine: linkBefore.headerLine,
-      titleRaw: linkBefore.titleRaw,
-      ancestorPath: buildAncestorPath(beforeDoc, linkBefore),
-      ownRangeHash: linkBefore.ownRangeHash,
-      preservedBlockId: linkBefore.preservedBlockId,
-      hadIdenticalSibling: hasIdenticalStructuralSibling(beforeDoc, linkBefore),
-    };
+    const anchor = createHistoryAnchor(beforeDoc, linkBefore);
+    expect(anchor.hadDuplicateBlockId).toBe(false);
 
     // 1. Preceding insert shifts Prior onto Link's old line -> MUST resolve to shifted Link (NEVER Prior!)
     const shiftedDoc = parseOk('# Root\n- Inserted\n- Prior\n- Link [[Target]] ^selected-link\n');
@@ -161,17 +154,55 @@ describe('topicResolver (M4-a cursor-to-map & link subpath resolution)', () => {
     const secondTwin = [...twinBefore.nodes.values()].filter((n) => n.titleRaw === 'Same')[1];
     expect(secondTwin).toBeDefined();
     if (!secondTwin) return;
-    const twinAnchor = {
-      baseContentHash: twinBefore.contentHash,
-      headerLine: secondTwin.headerLine,
-      titleRaw: secondTwin.titleRaw,
-      ancestorPath: buildAncestorPath(twinBefore, secondTwin),
-      ownRangeHash: secondTwin.ownRangeHash,
-      preservedBlockId: secondTwin.preservedBlockId,
-      hadIdenticalSibling: hasIdenticalStructuralSibling(twinBefore, secondTwin),
-    };
+    const twinAnchor = createHistoryAnchor(twinBefore, secondTwin);
     expect(resolveHistoryAnchor(twinBefore, twinAnchor)).toBe(secondTwin.id);
     const twinModified = parseOk('# Root\n- Inserted\n- Same\n');
     expect(resolveHistoryAnchor(twinModified, twinAnchor)).toBeNull();
+  });
+
+  it('fails closed when a block ID was duplicated across different parents at capture time (Codex PR #17 P1)', () => {
+    const beforeDoc = parseOk(
+      [
+        '# Root',
+        '## Parent A',
+        '- Link [[Target]] ^copied',
+        '## Parent B',
+        '- Link [[Target]] ^copied',
+        '',
+      ].join('\n'),
+    );
+    const copies = [...beforeDoc.nodes.values()].filter((n) => n.preservedBlockId === '^copied');
+    expect(copies).toHaveLength(2);
+    const firstCopy = copies[0];
+    expect(firstCopy).toBeDefined();
+    if (!firstCopy) return;
+
+    const anchor = createHistoryAnchor(beforeDoc, firstCopy);
+    expect(anchor.hadDuplicateBlockId).toBe(true);
+
+    // Byte-identical document still resolves the exact original line
+    expect(resolveHistoryAnchor(beforeDoc, anchor)).toBe(firstCopy.id);
+
+    // Deleting the first branch leaves only Parent B's ^copied -> MUST return null (NEVER select Parent B's branch!)
+    const afterDeleteFirst = parseOk(
+      ['# Root', '## Parent A', '## Parent B', '- Link [[Target]] ^copied', ''].join('\n'),
+    );
+    expect(resolveHistoryAnchor(afterDeleteFirst, anchor)).toBeNull();
+
+    // Case-insensitive duplicate (^copied vs ^COPIED) also fails closed when modified
+    const caseDupDoc = parseOk(
+      ['# Root', '## Parent A', '- Link [[Target]] ^copied', '## Parent B', '- Link [[Target]] ^COPIED', ''].join(
+        '\n',
+      ),
+    );
+    const caseFirst = [...caseDupDoc.nodes.values()].find((n) => n.preservedBlockId === '^copied');
+    expect(caseFirst).toBeDefined();
+    if (!caseFirst) return;
+    const caseAnchor = createHistoryAnchor(caseDupDoc, caseFirst);
+    expect(caseAnchor.hadDuplicateBlockId).toBe(true);
+    const afterDeleteCaseFirst = parseOk(
+      ['# Root', '## Parent A', '## Parent B', '- Link [[Target]] ^COPIED', ''].join('\n'),
+    );
+    expect(resolveHistoryAnchor(afterDeleteCaseFirst, caseAnchor)).toBeNull();
   });
 });

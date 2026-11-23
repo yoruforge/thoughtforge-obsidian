@@ -37,6 +37,7 @@ import { extractNodeImageEmbeds } from '../core/view/imageEmbeds';
 import type { MapHistoryAnchor } from '../core/view/navigationHistory';
 import {
   collectAncestorIds,
+  createHistoryAnchor,
   resolveHistoryAnchor,
   resolveTopicAtLine,
   resolveTopicBySubpath,
@@ -47,8 +48,6 @@ import {
 } from '../core/view/viewStateRemap';
 import type { Messages } from '../i18n';
 import {
-  buildAncestorPath,
-  hasIdenticalStructuralSibling,
   resolveDraftTarget,
   type DraftResolution,
   type SaveDraftInput,
@@ -182,15 +181,7 @@ function computeFitCamera(bounds: LayoutBounds, size: ViewportSize): CameraState
 }
 
 function buildHistoryAnchor(doc: MindMapDocument, node: TopicNode): MapHistoryAnchor {
-  return {
-    baseContentHash: doc.contentHash,
-    headerLine: node.headerLine,
-    titleRaw: node.titleRaw,
-    ancestorPath: buildAncestorPath(doc, node),
-    ownRangeHash: node.ownRangeHash,
-    preservedBlockId: node.preservedBlockId,
-    hadIdenticalSibling: hasIdenticalStructuralSibling(doc, node),
-  };
+  return createHistoryAnchor(doc, node);
 }
 
 export function MindMapApp({

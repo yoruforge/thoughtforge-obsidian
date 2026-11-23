@@ -11,6 +11,7 @@ const SAMPLE_ANCHOR: MapHistoryAnchor = {
   ancestorPath: ['Root'],
   ownRangeHash: 'own-12',
   preservedBlockId: '^selected-link',
+  hadDuplicateBlockId: false,
   hadIdenticalSibling: false,
 };
 

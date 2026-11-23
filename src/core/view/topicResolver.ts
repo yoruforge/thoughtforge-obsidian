@@ -32,28 +32,84 @@ function computeDepth(doc: MindMapDocument, node: TopicNode): number {
   return depth;
 }
 
-function nodeMatchesHeadingSegment(node: TopicNode, normalizedSegment: string): boolean {
-  if (normalizedSegment.length === 0) return false;
-  return (
-    normalizeSubpathSegment(node.displayTitle) === normalizedSegment ||
-    normalizeSubpathSegment(node.titleRaw) === normalizedSegment
-  );
+interface SubpathResolverIndex {
+  readonly blockIdExact: ReadonlyMap<string, string>;
+  readonly blockIdLower: ReadonlyMap<string, string>;
+  readonly headingsByLeaf: ReadonlyMap<string, readonly TopicNode[]>;
+  readonly listItemsByLeaf: ReadonlyMap<string, readonly TopicNode[]>;
+  readonly keysByNodeId: ReadonlyMap<string, readonly string[]>;
+  readonly resolvedCache: Map<string, string | null>;
 }
 
-function matchesAncestorChain(
+const MAX_RESOLVED_SUBPATH_CACHE = 4096;
+const subpathIndexCache = new WeakMap<MindMapDocument, SubpathResolverIndex>();
+
+function getSubpathResolverIndex(doc: MindMapDocument): SubpathResolverIndex {
+  const existing = subpathIndexCache.get(doc);
+  if (existing !== undefined) {
+    return existing;
+  }
+
+  const blockIdExact = new Map<string, string>();
+  const blockIdLower = new Map<string, string>();
+  const headingsByLeaf = new Map<string, TopicNode[]>();
+  const listItemsByLeaf = new Map<string, TopicNode[]>();
+  const keysByNodeId = new Map<string, readonly string[]>();
+
+  for (const node of doc.nodes.values()) {
+    if (node.preservedBlockId !== null) {
+      if (!blockIdExact.has(node.preservedBlockId)) {
+        blockIdExact.set(node.preservedBlockId, node.id);
+      }
+      const lower = node.preservedBlockId.toLowerCase();
+      if (!blockIdLower.has(lower)) {
+        blockIdLower.set(lower, node.id);
+      }
+    }
+
+    const normDisplay = normalizeSubpathSegment(node.displayTitle);
+    const normRaw = normalizeSubpathSegment(node.titleRaw);
+    const keys: string[] = [];
+    if (normDisplay.length > 0) keys.push(normDisplay);
+    if (normRaw.length > 0 && normRaw !== normDisplay) keys.push(normRaw);
+    keysByNodeId.set(node.id, keys);
+
+    if (node.kind === 'central-virtual') {
+      continue;
+    }
+
+    const targetMap = node.kind === 'heading' ? headingsByLeaf : listItemsByLeaf;
+    for (const key of keys) {
+      let bucket = targetMap.get(key);
+      if (!bucket) {
+        bucket = [];
+        targetMap.set(key, bucket);
+      }
+      bucket.push(node);
+    }
+  }
+
+  const index: SubpathResolverIndex = {
+    blockIdExact,
+    blockIdLower,
+    headingsByLeaf,
+    listItemsByLeaf,
+    keysByNodeId,
+    resolvedCache: new Map<string, string | null>(),
+  };
+  subpathIndexCache.set(doc, index);
+  return index;
+}
+
+function matchesIndexedAncestorChain(
   doc: MindMapDocument,
+  keysByNodeId: ReadonlyMap<string, readonly string[]>,
   node: TopicNode,
   segments: readonly string[],
 ): boolean {
-  const leafSegment = segments[segments.length - 1];
-  if (leafSegment === undefined || !nodeMatchesHeadingSegment(node, leafSegment)) {
-    return false;
-  }
-  if (segments.length === 1) {
+  if (segments.length <= 1) {
     return true;
   }
-
-  // Match preceding heading path segments in order while walking up ancestors.
   let targetIdx = segments.length - 2;
   let cursorId = node.parentId;
   const visited = new Set<string>([node.id]);
@@ -62,7 +118,8 @@ function matchesAncestorChain(
     const ancestor = doc.nodes.get(cursorId);
     if (!ancestor) break;
     const expected = segments[targetIdx];
-    if (expected !== undefined && nodeMatchesHeadingSegment(ancestor, expected)) {
+    const ancestorKeys = keysByNodeId.get(cursorId);
+    if (expected !== undefined && ancestorKeys !== undefined && ancestorKeys.includes(expected)) {
       targetIdx -= 1;
     }
     cursorId = ancestor.parentId;
@@ -114,6 +171,10 @@ export function resolveTopicAtLine(doc: MindMapDocument, line: number): string {
 /**
  * Resolves an Obsidian link subpath (`#Heading`, `#Parent#Child`, or `#^block-id`)
  * to a `TopicNode.id` inside `doc`. Returns `null` when no matching topic exists.
+ *
+ * Uses a per-document WeakMap index (`SubpathResolverIndex`) so repeated Backlinks lookups
+ * across large notes (e.g. 2,000+ headings x 100+ linking notes) run in O(1) amortized time
+ * while preserving exact nested-heading and heading-over-list precedence.
  */
 export function resolveTopicBySubpath(doc: MindMapDocument, rawSubpath: string): string | null {
   const decoded = safeDecodeSubpath(rawSubpath).trim();
@@ -122,43 +183,52 @@ export function resolveTopicBySubpath(doc: MindMapDocument, rawSubpath: string):
     return null;
   }
 
+  const index = getSubpathResolverIndex(doc);
+  if (index.resolvedCache.has(stripped)) {
+    return index.resolvedCache.get(stripped) ?? null;
+  }
+
+  let resolved: string | null = null;
+
   // Block ID target (`^block-id`)
   if (stripped.startsWith('^')) {
-    const targetLower = stripped.toLowerCase();
-    let caseInsensitiveMatch: string | null = null;
-    for (const node of doc.nodes.values()) {
-      if (node.preservedBlockId === null) continue;
-      if (node.preservedBlockId === stripped) {
-        return node.id;
+    resolved =
+      index.blockIdExact.get(stripped) ?? index.blockIdLower.get(stripped.toLowerCase()) ?? null;
+  } else {
+    // Heading / nested heading target (`Section` or `Parent#Child`)
+    const segments = stripped
+      .split('#')
+      .map(normalizeSubpathSegment)
+      .filter((seg) => seg.length > 0);
+    const leafSegment = segments[segments.length - 1];
+    if (leafSegment !== undefined) {
+      const headingCandidates = index.headingsByLeaf.get(leafSegment);
+      if (headingCandidates) {
+        for (const node of headingCandidates) {
+          if (matchesIndexedAncestorChain(doc, index.keysByNodeId, node, segments)) {
+            resolved = node.id;
+            break;
+          }
+        }
       }
-      if (caseInsensitiveMatch === null && node.preservedBlockId.toLowerCase() === targetLower) {
-        caseInsensitiveMatch = node.id;
+      if (resolved === null) {
+        const listCandidates = index.listItemsByLeaf.get(leafSegment);
+        if (listCandidates) {
+          for (const node of listCandidates) {
+            if (matchesIndexedAncestorChain(doc, index.keysByNodeId, node, segments)) {
+              resolved = node.id;
+              break;
+            }
+          }
+        }
       }
     }
-    return caseInsensitiveMatch;
   }
 
-  // Heading / nested heading target (`Section` or `Parent#Child`)
-  const segments = stripped
-    .split('#')
-    .map(normalizeSubpathSegment)
-    .filter((seg) => seg.length > 0);
-  if (segments.length === 0) {
-    return null;
+  if (index.resolvedCache.size < MAX_RESOLVED_SUBPATH_CACHE) {
+    index.resolvedCache.set(stripped, resolved);
   }
-
-  let fallbackListMatch: string | null = null;
-  for (const node of doc.nodes.values()) {
-    if (node.kind === 'central-virtual') continue;
-    if (!matchesAncestorChain(doc, node, segments)) continue;
-    if (node.kind === 'heading') {
-      return node.id;
-    }
-    if (fallbackListMatch === null) {
-      fallbackListMatch = node.id;
-    }
-  }
-  return fallbackListMatch;
+  return resolved;
 }
 
 /**
@@ -221,6 +291,53 @@ function sameStringList(a: readonly string[], b: readonly string[]): boolean {
 }
 
 /**
+ * Captures a fail-closed structural anchor snapshot for `node` inside `doc` (used when
+ * recording history Back/Forward return points). Checks document-wide uniqueness of both
+ * `preservedBlockId` (case-insensitive) and structural identity `(ancestorPath, titleRaw,
+ * ownRangeHash)` in a single pass.
+ */
+export function createHistoryAnchor(doc: MindMapDocument, node: TopicNode): MapHistoryAnchor {
+  const targetAncestorPath = buildAncestorTitlePath(doc, node);
+  const targetBlockLower = node.preservedBlockId?.toLowerCase() ?? null;
+
+  let hadDuplicateBlockId = false;
+  let hadIdenticalSibling = false;
+
+  for (const other of doc.nodes.values()) {
+    if (other.id === node.id) continue;
+    if (
+      targetBlockLower !== null &&
+      other.preservedBlockId !== null &&
+      other.preservedBlockId.toLowerCase() === targetBlockLower
+    ) {
+      hadDuplicateBlockId = true;
+    }
+    if (
+      !hadIdenticalSibling &&
+      other.titleRaw === node.titleRaw &&
+      other.ownRangeHash === node.ownRangeHash &&
+      sameStringList(buildAncestorTitlePath(doc, other), targetAncestorPath)
+    ) {
+      hadIdenticalSibling = true;
+    }
+    if (hadDuplicateBlockId && hadIdenticalSibling) {
+      break;
+    }
+  }
+
+  return {
+    baseContentHash: doc.contentHash,
+    headerLine: node.headerLine,
+    titleRaw: node.titleRaw,
+    ancestorPath: targetAncestorPath,
+    ownRangeHash: node.ownRangeHash,
+    preservedBlockId: node.preservedBlockId,
+    hadDuplicateBlockId,
+    hadIdenticalSibling,
+  };
+}
+
+/**
  * Strictly fail-closed structural resolver for history Back/Forward return anchors.
  * - Unchanged document (`contentHash === baseContentHash`): exact `headerLine` + `titleRaw` match.
  * - Modified document:
@@ -254,15 +371,26 @@ export function resolveHistoryAnchor(
 
   // Document changed while user was away: never fall back to raw line number!
   if (anchor.preservedBlockId !== null) {
+    // Fail closed if this block ID was already duplicated anywhere in the document when history
+    // was recorded (e.g. two branches under different parents sharing `^copied`): deleting the
+    // original branch must NEVER transfer selection onto the surviving duplicate!
+    if (anchor.hadDuplicateBlockId) {
+      return null;
+    }
+    const targetLower = anchor.preservedBlockId.toLowerCase();
     const blockMatches: TopicNode[] = [];
     for (const node of doc.nodes.values()) {
-      if (node.preservedBlockId === anchor.preservedBlockId) {
+      if (
+        node.preservedBlockId !== null &&
+        node.preservedBlockId.toLowerCase() === targetLower
+      ) {
         blockMatches.push(node);
       }
     }
     if (
       blockMatches.length === 1 &&
       blockMatches[0] &&
+      blockMatches[0].preservedBlockId === anchor.preservedBlockId &&
       blockMatches[0].titleRaw === anchor.titleRaw
     ) {
       return blockMatches[0].id;

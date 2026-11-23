@@ -103,4 +103,14 @@ describe('imageEmbeds (M4-b safe embed extraction & layout reservation)', () => 
     // Sibling below MUST never overlap the taller thumbnail card
     expect(sibWith.y).toBeGreaterThanOrEqual(lnWith.y + lnWith.height);
   });
+
+  it('extracts leading body images on H1-less central-virtual root notes while skipping virtual title (Codex PR #17 P2)', () => {
+    const doc = parseOk(['Diagram ![[pic.png]]', '', '- Child A', '- Child B', ''].join('\n'));
+    const root = doc.nodes.get(doc.rootId);
+    expect(root).toBeDefined();
+    if (!root) return;
+    expect(root.kind).toBe('central-virtual');
+    expect(root.noteRange).toEqual({ startLine: 0, endLine: 1 });
+    expect(extractNodeImageEmbeds(root)).toEqual([{ target: 'pic.png', alt: 'pic.png' }]);
+  });
 });

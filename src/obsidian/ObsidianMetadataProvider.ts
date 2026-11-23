@@ -1,17 +1,13 @@
 import { TFile, type App } from 'obsidian';
 import type { MindMapDocument } from '../core/model';
-import {
-  doesLinkTargetTopicNode,
-  formatSourceTitleFromPath,
-  sortBacklinks,
-} from '../core/view/backlinks';
+import { formatSourceTitleFromPath, sortBacklinks } from '../core/view/backlinks';
 import {
   defaultImageAltFromPath,
   extractNodeImageEmbeds,
   isNumericImageDimension,
   isSafeVaultImagePath,
 } from '../core/view/imageEmbeds';
-import { splitLinkTargetSubpath } from '../core/view/topicResolver';
+import { resolveTopicBySubpath, splitLinkTargetSubpath } from '../core/view/topicResolver';
 import type {
   BacklinkItem,
   BacklinkQueryTarget,
@@ -112,8 +108,11 @@ export class ObsidianMetadataProvider implements NodeMetadataProvider {
     if (cache !== null) {
       const ownerByLine = new Map<number, string>();
       for (const node of doc.nodes.values()) {
-        if (node.kind === 'central-virtual') continue;
-        ownerByLine.set(node.headerLine, node.id);
+        // Virtual central roots (H1-less notes) have no real heading line, so skip `headerLine`,
+        // but still map their `noteRange` so leading body images appear on the central topic!
+        if (node.kind !== 'central-virtual') {
+          ownerByLine.set(node.headerLine, node.id);
+        }
         if (node.noteRange !== null) {
           for (let line = node.noteRange.startLine; line < node.noteRange.endLine; line += 1) {
             ownerByLine.set(line, node.id);
@@ -197,16 +196,23 @@ export class ObsidianMetadataProvider implements NodeMetadataProvider {
       if (target !== undefined) {
         const cache = this.app.metadataCache.getFileCache(sourceFile);
         const refs = [...(cache?.links ?? []), ...(cache?.embeds ?? [])];
+        const destCache = new Map<string, TFile | null>();
         for (const ref of refs) {
           const rawLink = ref.link;
-          if (!rawLink) continue;
-          const { pathPart } = splitLinkTargetSubpath(rawLink);
-          const resolvedDest =
-            pathPart.length === 0
-              ? sourceFile
-              : this.app.metadataCache.getFirstLinkpathDest(pathPart, sourcePath);
+          if (!rawLink || !rawLink.includes('#')) continue;
+          const { pathPart, subpath } = splitLinkTargetSubpath(rawLink);
+          if (subpath === undefined) continue;
+          let resolvedDest: TFile | null;
+          if (pathPart.length === 0) {
+            resolvedDest = sourceFile;
+          } else if (destCache.has(pathPart)) {
+            resolvedDest = destCache.get(pathPart) ?? null;
+          } else {
+            resolvedDest = this.app.metadataCache.getFirstLinkpathDest(pathPart, sourcePath);
+            destCache.set(pathPart, resolvedDest);
+          }
           if (resolvedDest?.path !== filePath) continue;
-          if (doesLinkTargetTopicNode(target.doc, rawLink, target.nodeId)) {
+          if (resolveTopicBySubpath(target.doc, subpath) === target.nodeId) {
             targetsSpecificAnchor = true;
             break;
           }

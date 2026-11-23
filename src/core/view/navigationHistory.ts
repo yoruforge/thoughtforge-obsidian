@@ -5,6 +5,7 @@ export interface MapHistoryAnchor {
   readonly ancestorPath: readonly string[];
   readonly ownRangeHash: string;
   readonly preservedBlockId: string | null;
+  readonly hadDuplicateBlockId: boolean;
   readonly hadIdenticalSibling: boolean;
 }
 
@@ -25,6 +26,7 @@ function sameAnchor(a: MapHistoryAnchor | undefined, b: MapHistoryAnchor | undef
     a.titleRaw !== b.titleRaw ||
     a.ownRangeHash !== b.ownRangeHash ||
     a.preservedBlockId !== b.preservedBlockId ||
+    a.hadDuplicateBlockId !== b.hadDuplicateBlockId ||
     a.hadIdenticalSibling !== b.hadIdenticalSibling ||
     a.ancestorPath.length !== b.ancestorPath.length
   ) {
