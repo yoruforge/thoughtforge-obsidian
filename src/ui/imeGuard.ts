@@ -2,12 +2,15 @@ export interface GuardableKeyEvent {
   readonly isComposing?: boolean;
   readonly keyCode?: number;
   readonly key?: string;
+  readonly metaKey?: boolean;
+  readonly ctrlKey?: boolean;
 }
 
 export type InlineEditorKeyAction =
   | 'pass-to-ime'
   | 'suppress-default'
   | 'commit'
+  | 'split'
   | 'cancel'
   | 'ignore';
 
@@ -76,6 +79,9 @@ export function decideInlineEditorKeyAction(
     }
     if (guard.isKeyGuarded(event, nowMs, guardWindowMs)) {
       return 'suppress-default';
+    }
+    if (event.key === 'Enter' && (event.metaKey === true || event.ctrlKey === true)) {
+      return 'split';
     }
     return 'commit';
   }

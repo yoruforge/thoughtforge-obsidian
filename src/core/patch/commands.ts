@@ -27,6 +27,13 @@ export type SemanticCommand =
       readonly placement: 'after' | 'before';
     }
   | {
+      readonly type: 'splitSibling';
+      readonly guard: PatchGuard;
+      readonly leftTitle: string;
+      readonly rightTitle: string;
+    }
+  | { readonly type: 'toggleTask'; readonly guard: PatchGuard }
+  | {
       readonly type: 'renameAndInsertChild';
       readonly guard: PatchGuard;
       readonly newTitle: string;
@@ -63,6 +70,9 @@ export type PatchRejectReason =
   | 'empty-title'
   | 'block-syntax-in-title'
   | 'cannot-insert-sibling-for-root'
+  | 'cannot-modify-root'
+  | 'boundary-no-op'
+  | 'not-a-task'
   | 'invalid-note-block-syntax'
   | 'heading-level-out-of-range'
   | 'mixed-heading-list-conversion'
@@ -73,8 +83,9 @@ export type PatchRejectReason =
   | 'unsupported-command';
 
 export interface PatchFocusHint {
+  /** 0-based line index of the topic to focus, or -1 to focus the document root (e.g. virtual root). */
   readonly targetHeaderLine: number;
   readonly expectedTitleRaw: string;
 }
 
-// TODO: [M2-b/c 構造編集・ノート編集] - planner.ts / validator.ts に残りの SemanticCommand（updateNote / insertParent / moveSibling / indent / outdent / reparent / delete / pasteBranch）を追加する
+// TODO: [M2-c 構造・ノート・コピペ拡張] - planner.ts / validator.ts に updateNote / reparent / pasteBranch を追加する

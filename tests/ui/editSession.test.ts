@@ -4,6 +4,7 @@ import { FileCoordinator } from '../../src/sync/FileCoordinator';
 import type { ObsidianHostPort } from '../../src/sync/ports';
 import {
   buildCommitRenameCommand,
+  buildSplitSiblingCommand,
   createEditingSession,
   isEditingSessionValid,
 } from '../../src/ui/editSession';
@@ -94,5 +95,13 @@ describe('editSession (P1-1 regression)', () => {
     const session = createEditingSession('notes/a.md', parsed.document, topic);
     expect(isEditingSessionValid(session, 'notes/b.md', parsed.document)).toBe(false);
     expect(buildCommitRenameCommand(session, 'notes/b.md', 'New Name')).toBeNull();
+    expect(buildSplitSiblingCommand(session, 'notes/b.md', 'Left', 'Right')).toBeNull();
+    expect(buildSplitSiblingCommand(session, 'notes/a.md', 'Left', '   ')).toBeNull();
+    expect(buildSplitSiblingCommand(session, 'notes/a.md', 'Left', 'Right')).toEqual({
+      type: 'splitSibling',
+      guard: session.guard,
+      leftTitle: 'Left',
+      rightTitle: 'Right',
+    });
   });
 });

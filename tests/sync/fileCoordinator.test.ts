@@ -261,4 +261,151 @@ describe('FileCoordinator', () => {
     expect(outcome.rejectCode).toBe('editor-dirty');
     expect(host.files.get(path)).toBe('# Root\n- Original\n');
   });
+
+  it('supports multi-step Undo and Redo including restoring deleted branches with unmapped blocks', async () => {
+    const host = new InMemoryHost();
+    const path = 'notes/undo.md';
+    const initial = ['# Root', '## Branch A', '```ts', 'const x = 1;', '```', '## Branch B', ''].join('\n');
+    host.files.set(path, initial);
+    const coordinator = new FileCoordinator(host);
+
+    expect(coordinator.getHistoryStatus(path)).toEqual({
+      canUndo: false,
+      canRedo: false,
+      undoCount: 0,
+      redoCount: 0,
+    });
+    const emptyUndo = await coordinator.undoForFile(path, 'undo');
+    expect(emptyUndo.accepted).toBe(false);
+    expect(emptyUndo.rejectCode).toBe('nothing-to-undo');
+
+    const doc1 = parseOk(initial);
+    const branchA = findNode(doc1, 'Branch A');
+    const step1 = await coordinator.dispatchForFile(path, 'undo', {
+      type: 'deleteBranch',
+      guard: guardFor(doc1, branchA),
+      confirmedUnmapped: true,
+    });
+    expect(step1.accepted).toBe(true);
+    expect(host.files.get(path)).toBe('# Root\n## Branch B\n');
+    expect(coordinator.getHistoryStatus(path).undoCount).toBe(1);
+
+    // Step 2: rename Branch B
+    if (!step1.nextDocument) return;
+    const branchB = findNode(step1.nextDocument, 'Branch B');
+    const step2 = await coordinator.dispatchForFile(path, 'undo', {
+      type: 'rename',
+      guard: guardFor(step1.nextDocument, branchB),
+      newTitle: 'Branch Beta',
+    });
+    expect(step2.accepted).toBe(true);
+    expect(host.files.get(path)).toBe('# Root\n## Branch Beta\n');
+    expect(coordinator.getHistoryStatus(path).undoCount).toBe(2);
+
+    // Undo step 2 -> Branch B
+    const undo2 = await coordinator.undoForFile(path, 'undo');
+    expect(undo2.accepted).toBe(true);
+    expect(host.files.get(path)).toBe('# Root\n## Branch B\n');
+    expect(coordinator.getHistoryStatus(path)).toEqual({
+      canUndo: true,
+      canRedo: true,
+      undoCount: 1,
+      redoCount: 1,
+    });
+
+    // Undo step 1 -> full Branch A + fenced code restored byte-for-byte
+    const undo1 = await coordinator.undoForFile(path, 'undo');
+    expect(undo1.accepted).toBe(true);
+    expect(host.files.get(path)).toBe(initial);
+    expect(undo1.nextDocument?.nodes.get(undo1.focusNodeId ?? '')?.titleRaw).toBe('Branch A');
+
+    // Redo step 1 -> deletes Branch A again
+    const redo1 = await coordinator.redoForFile(path, 'undo');
+    expect(redo1.accepted).toBe(true);
+    expect(host.files.get(path)).toBe('# Root\n## Branch B\n');
+
+    // New edit clears redo stack
+    if (!redo1.nextDocument) return;
+    const bAgain = findNode(redo1.nextDocument, 'Branch B');
+    const step3 = await coordinator.dispatchForFile(path, 'undo', {
+      type: 'rename',
+      guard: guardFor(redo1.nextDocument, bAgain),
+      newTitle: 'Branch Fresh',
+    });
+    expect(step3.accepted).toBe(true);
+    expect(coordinator.getHistoryStatus(path).canRedo).toBe(false);
+    const emptyRedo = await coordinator.redoForFile(path, 'undo');
+    expect(emptyRedo.accepted).toBe(false);
+    expect(emptyRedo.rejectCode).toBe('nothing-to-redo');
+  });
+
+  it('aborts Undo/Redo fail-closed on external modification (CAS) and on dirty Markdown editor', async () => {
+    const host = new InMemoryHost();
+    const path = 'notes/undo-cas.md';
+    host.files.set(path, '# Root\n- A\n');
+    const coordinator = new FileCoordinator(host);
+    const doc = parseOk(host.files.get(path) ?? '');
+    const nodeA = findNode(doc, 'A');
+
+    const edited = await coordinator.dispatchForFile(path, 'undo-cas', {
+      type: 'rename',
+      guard: guardFor(doc, nodeA),
+      newTitle: 'B',
+    });
+    expect(edited.accepted).toBe(true);
+
+    // Dirty editor blocks undo without dropping history
+    host.editorState = 'dirty';
+    const dirtyUndo = await coordinator.undoForFile(path, 'undo-cas');
+    expect(dirtyUndo.accepted).toBe(false);
+    expect(dirtyUndo.rejectCode).toBe('editor-dirty');
+    expect(coordinator.getHistoryStatus(path).canUndo).toBe(true);
+    host.editorState = 'clean';
+
+    // External modification causes CAS stale rejection and clears diverged history
+    host.files.set(path, '# Root\n- External\n');
+    const staleUndo = await coordinator.undoForFile(path, 'undo-cas');
+    expect(staleUndo.accepted).toBe(false);
+    expect(staleUndo.rejectCode).toBe('stale-target');
+    expect(host.files.get(path)).toBe('# Root\n- External\n');
+    expect(coordinator.getHistoryStatus(path).canUndo).toBe(false);
+  });
+
+  it('caps history length and migrates/clears history on file rename and delete', async () => {
+    const host = new InMemoryHost();
+    const oldPath = 'notes/old.md';
+    const newPath = 'notes/new.md';
+    host.files.set(oldPath, '# Root\n- V0\n');
+    const coordinator = new FileCoordinator(host, { maxHistoryEntries: 2 });
+
+    let currentDoc = parseOk(host.files.get(oldPath) ?? '');
+    for (const nextTitle of ['V1', 'V2', 'V3']) {
+      const node = [...currentDoc.nodes.values()].find((n) => n.kind === 'list-item');
+      if (!node) throw new Error('missing node');
+      const res = await coordinator.dispatchForFile(oldPath, 'old', {
+        type: 'rename',
+        guard: guardFor(currentDoc, node),
+        newTitle: nextTitle,
+      });
+      expect(res.accepted).toBe(true);
+      if (!res.nextDocument) return;
+      currentDoc = res.nextDocument;
+    }
+
+    expect(coordinator.getHistoryStatus(oldPath).undoCount).toBe(2);
+
+    // Rename path migrates history
+    host.files.set(newPath, host.files.get(oldPath) ?? '');
+    host.files.delete(oldPath);
+    coordinator.renameHistoryPath(oldPath, newPath);
+    expect(coordinator.getHistoryStatus(oldPath).canUndo).toBe(false);
+    expect(coordinator.getHistoryStatus(newPath).undoCount).toBe(2);
+
+    const undoRenamed = await coordinator.undoForFile(newPath, 'new');
+    expect(undoRenamed.accepted).toBe(true);
+    expect(host.files.get(newPath)).toBe('# Root\n- V2\n');
+
+    coordinator.clearHistory(newPath);
+    expect(coordinator.getHistoryStatus(newPath).canUndo).toBe(false);
+  });
 });

@@ -26,10 +26,12 @@ import type { CommandDispatchOutcome } from '../sync/ports';
 import {
   buildCommitRenameCommand,
   buildPatchGuard,
+  buildSplitSiblingCommand,
   createEditingSession,
   isEditingSessionValid,
   type EditingSession,
 } from './editSession';
+import type { GuardableKeyEvent } from './imeGuard';
 import { NodePopover } from './NodePopover';
 import { StatusBar } from './StatusBar';
 import { Toolbar } from './Toolbar';
@@ -38,6 +40,14 @@ import {
   ViewportCanvas,
   type ViewportSize,
 } from './ViewportCanvas';
+
+export interface MindMapActionTriggers {
+  readonly editSelected: () => boolean;
+  readonly splitEditing: (event: GuardableKeyEvent) => boolean;
+  readonly undo: () => boolean;
+  readonly redo: () => boolean;
+  readonly toggleSelectedTask: () => boolean;
+}
 
 export interface MindMapAppProps {
   readonly filePath: string;
@@ -49,7 +59,9 @@ export interface MindMapAppProps {
   readonly onOpenMarkdown: (line?: number) => void;
   readonly onOpenLink: (link: TopicLink, newTab: boolean) => void;
   readonly onDispatchCommand?: (command: SemanticCommand) => Promise<CommandDispatchOutcome>;
-  readonly onRegisterEditSelectedTrigger?: (trigger: (() => boolean) | null) => void;
+  readonly onUndo?: () => Promise<CommandDispatchOutcome>;
+  readonly onRedo?: () => Promise<CommandDispatchOutcome>;
+  readonly onRegisterActionTriggers?: (triggers: MindMapActionTriggers | null) => void;
   readonly onNotify?: (message: string) => void;
 }
 
@@ -85,7 +97,9 @@ export function MindMapApp({
   onOpenMarkdown,
   onOpenLink,
   onDispatchCommand,
-  onRegisterEditSelectedTrigger,
+  onUndo,
+  onRedo,
+  onRegisterActionTriggers,
   onNotify,
 }: MindMapAppProps) {
   const palette = useMemo(() => getThemePalette(themeMode), [themeMode]);
@@ -111,6 +125,7 @@ export function MindMapApp({
   const viewportSizeRef = useRef<ViewportSize>({ width: 960, height: 640 });
   const hasInitialFitRef = useRef(false);
   const filterInputRef = useRef<HTMLInputElement | null>(null);
+  const inlineSplitTriggerRef = useRef<((event: GuardableKeyEvent) => boolean) | null>(null);
   const isCommandInFlightRef = useRef(false);
 
   // Reset per-note view state when switching to a different Markdown file
@@ -298,13 +313,43 @@ export function MindMapApp({
                 createEditingSession(startedFilePath, outcome.nextDocument, focusedNode),
               );
             }
+          } else {
+            // Keep keyboard focus inside the map after node unmount/re-key (e.g. delete or reorder)
+            // so follow-up shortcuts work immediately without clicking the canvas again.
+            rootRef.current?.focus({ preventScroll: true });
           }
+        } else if (!outcome.accepted && outcome.rejectCode === 'boundary-no-op') {
+          // Restore focus to canvas after cancelling a confirmation modal.
+          rootRef.current?.focus({ preventScroll: true });
         }
       } finally {
         isCommandInFlightRef.current = false;
       }
     },
     [onDispatchCommand],
+  );
+
+  const runHistoryStep = useCallback(
+    async (direction: 'undo' | 'redo'): Promise<void> => {
+      const handler = direction === 'undo' ? onUndo : onRedo;
+      if (!handler || isCommandInFlightRef.current) return;
+      const startedFilePath = filePathRef.current;
+      isCommandInFlightRef.current = true;
+      try {
+        const outcome = await handler();
+        if (filePathRef.current !== startedFilePath) {
+          return;
+        }
+        if (outcome.accepted && outcome.focusNodeId !== undefined) {
+          setEditingSession(null);
+          setSelectedId(outcome.focusNodeId);
+          rootRef.current?.focus({ preventScroll: true });
+        }
+      } finally {
+        isCommandInFlightRef.current = false;
+      }
+    },
+    [onUndo, onRedo],
   );
 
   const handleStartEdit = useCallback(
@@ -340,10 +385,26 @@ export function MindMapApp({
       if (command === null) {
         return;
       }
-      // The note changed after editing began (e.g. a blur fired while the editor was being
-      // removed): the write would be rejected as stale, so hand the typed text back instead.
       if (!isEditingSessionValid(session, filePathRef.current, docRef.current)) {
         handleDiscardEdit(nextTitle);
+        return;
+      }
+      void dispatchAndFocus(command, false);
+    },
+    [onDispatchCommand, dispatchAndFocus, handleDiscardEdit],
+  );
+
+  const handleSplitEdit = useCallback(
+    (session: EditingSession, leftTitle: string, rightTitle: string) => {
+      setEditingSession(null);
+      rootRef.current?.focus();
+      if (!onDispatchCommand) return;
+      const command = buildSplitSiblingCommand(session, filePathRef.current, leftTitle, rightTitle);
+      if (command === null) {
+        return;
+      }
+      if (!isEditingSessionValid(session, filePathRef.current, docRef.current)) {
+        handleDiscardEdit(`${leftTitle} ${rightTitle}`);
         return;
       }
       void dispatchAndFocus(command, false);
@@ -356,23 +417,73 @@ export function MindMapApp({
     rootRef.current?.focus();
   }, []);
 
-  const editSelectedTriggerRef = useRef<() => boolean>(() => false);
-  editSelectedTriggerRef.current = (): boolean => {
-    if (!doc || !layout) return false;
-    if (effectiveEditingSession !== null) return false;
-    if (effectiveSelectedId === null) return false;
-    handleStartEdit(effectiveSelectedId);
-    return true;
+  const handleToggleTask = useCallback(
+    (nodeId: string) => {
+      if (!doc || !onDispatchCommand) return;
+      const node = doc.nodes.get(nodeId);
+      if (!node) return;
+      void dispatchAndFocus(
+        {
+          type: 'toggleTask',
+          guard: buildPatchGuard(doc, node),
+        },
+        false,
+      );
+    },
+    [doc, onDispatchCommand, dispatchAndFocus],
+  );
+
+  const actionTriggersRef = useRef<MindMapActionTriggers>({
+    editSelected: () => false,
+    splitEditing: () => false,
+    undo: () => false,
+    redo: () => false,
+    toggleSelectedTask: () => false,
+  });
+  actionTriggersRef.current = {
+    editSelected: (): boolean => {
+      if (!doc || !layout) return false;
+      if (effectiveEditingSession !== null) return false;
+      if (effectiveSelectedId === null) return false;
+      handleStartEdit(effectiveSelectedId);
+      return true;
+    },
+    splitEditing: (event: GuardableKeyEvent): boolean => {
+      if (effectiveEditingSession === null) return false;
+      return inlineSplitTriggerRef.current?.(event) ?? false;
+    },
+    undo: (): boolean => {
+      if (!doc || !onUndo || effectiveEditingSession !== null) return false;
+      void runHistoryStep('undo');
+      return true;
+    },
+    redo: (): boolean => {
+      if (!doc || !onRedo || effectiveEditingSession !== null) return false;
+      void runHistoryStep('redo');
+      return true;
+    },
+    toggleSelectedTask: (): boolean => {
+      if (!doc || !onDispatchCommand || effectiveEditingSession !== null) return false;
+      if (effectiveSelectedId === null) return false;
+      handleToggleTask(effectiveSelectedId);
+      return true;
+    },
   };
 
   useEffect(() => {
-    if (!onRegisterEditSelectedTrigger) return;
-    const trigger = (): boolean => editSelectedTriggerRef.current();
-    onRegisterEditSelectedTrigger(trigger);
-    return () => {
-      onRegisterEditSelectedTrigger(null);
+    if (!onRegisterActionTriggers) return;
+    const triggers: MindMapActionTriggers = {
+      editSelected: () => actionTriggersRef.current.editSelected(),
+      splitEditing: (event: GuardableKeyEvent) => actionTriggersRef.current.splitEditing(event),
+      undo: () => actionTriggersRef.current.undo(),
+      redo: () => actionTriggersRef.current.redo(),
+      toggleSelectedTask: () => actionTriggersRef.current.toggleSelectedTask(),
     };
-  }, [onRegisterEditSelectedTrigger]);
+    onRegisterActionTriggers(triggers);
+    return () => {
+      onRegisterActionTriggers(null);
+    };
+  }, [onRegisterActionTriggers]);
 
   const handleKeyDown = (event: KeyboardEvent<HTMLDivElement>): void => {
     if (event.defaultPrevented) return;
@@ -405,21 +516,113 @@ export function MindMapApp({
       return;
     }
 
-    // Zoom fit shortcut (Cmd/Ctrl + 0)
-    if ((event.metaKey || event.ctrlKey) && event.key === '0') {
-      event.preventDefault();
-      fitView();
+    const modKey = event.metaKey || event.ctrlKey;
+
+    if (modKey && !event.altKey) {
+      // Zoom fit shortcut (Cmd/Ctrl + 0)
+      if (event.key === '0' && !event.shiftKey) {
+        event.preventDefault();
+        fitView();
+        return;
+      }
+
+      // Undo / Redo fallback (also registered on View.scope in MindMapView)
+      if (event.key.toLowerCase() === 'z') {
+        event.preventDefault();
+        void runHistoryStep(event.shiftKey ? 'redo' : 'undo');
+        return;
+      }
+      if (event.ctrlKey && !event.metaKey && !event.shiftKey && event.key.toLowerCase() === 'y') {
+        event.preventDefault();
+        void runHistoryStep('redo');
+        return;
+      }
+
+      // Cmd/Ctrl + Enter starts inline edit on selected topic
+      if (event.key === 'Enter' && !event.shiftKey && effectiveSelectedId !== null) {
+        event.preventDefault();
+        handleStartEdit(effectiveSelectedId);
+        return;
+      }
+
+      // Cmd/Ctrl + Backspace / Delete: delete node only & promote children
+      if (
+        (event.key === 'Backspace' || event.key === 'Delete') &&
+        !event.shiftKey &&
+        effectiveSelectedId !== null &&
+        onDispatchCommand
+      ) {
+        const targetNode = doc.nodes.get(effectiveSelectedId);
+        if (targetNode) {
+          event.preventDefault();
+          void dispatchAndFocus(
+            {
+              type: 'deleteNodeKeepChildren',
+              guard: buildPatchGuard(doc, targetNode),
+            },
+            false,
+          );
+          return;
+        }
+      }
+
+      // Cmd/Ctrl + ArrowUp / ArrowDown: reorder sibling
+      if (
+        (event.key === 'ArrowUp' || event.key === 'ArrowDown') &&
+        !event.shiftKey &&
+        effectiveSelectedId !== null &&
+        onDispatchCommand
+      ) {
+        const targetNode = doc.nodes.get(effectiveSelectedId);
+        if (targetNode) {
+          event.preventDefault();
+          void dispatchAndFocus(
+            {
+              type: 'moveSibling',
+              guard: buildPatchGuard(doc, targetNode),
+              direction: event.key === 'ArrowUp' ? 'up' : 'down',
+            },
+            false,
+          );
+          return;
+        }
+      }
+
+      // Cmd/Ctrl + ArrowLeft / ArrowRight: side-aware indent / outdent
+      if (
+        (event.key === 'ArrowLeft' || event.key === 'ArrowRight') &&
+        !event.shiftKey &&
+        effectiveSelectedId !== null &&
+        onDispatchCommand
+      ) {
+        const targetNode = doc.nodes.get(effectiveSelectedId);
+        const targetLayout = layout.nodes.get(effectiveSelectedId);
+        if (targetNode && targetLayout && targetLayout.side !== 'center') {
+          event.preventDefault();
+          const outwardKey = targetLayout.side === 'right' ? 'ArrowRight' : 'ArrowLeft';
+          const commandType = event.key === outwardKey ? 'indent' : 'outdent';
+          void dispatchAndFocus(
+            {
+              type: commandType,
+              guard: buildPatchGuard(doc, targetNode),
+            },
+            false,
+          );
+          return;
+        }
+      }
+
       return;
     }
 
     // Quick Filter focus (/)
-    if (event.key === '/' && !event.metaKey && !event.ctrlKey && !event.altKey) {
+    if (event.key === '/' && !modKey && !event.altKey) {
       event.preventDefault();
       filterInputRef.current?.focus();
       return;
     }
 
-    if (event.metaKey || event.ctrlKey || event.altKey) {
+    if (event.altKey) {
       return;
     }
 
@@ -429,8 +632,37 @@ export function MindMapApp({
       return;
     }
 
+    if (event.key === 'Tab' && effectiveSelectedId !== null && onDispatchCommand) {
+      const targetNode = doc.nodes.get(effectiveSelectedId);
+      if (targetNode) {
+        event.preventDefault();
+        if (event.shiftKey) {
+          void dispatchAndFocus(
+            {
+              type: 'insertParent',
+              guard: buildPatchGuard(doc, targetNode),
+              parentTitle: messages.edit.newTopicTitle,
+            },
+            true,
+          );
+        } else {
+          void dispatchAndFocus(
+            {
+              type: 'insertChild',
+              guard: buildPatchGuard(doc, targetNode),
+              title: messages.edit.newTopicTitle,
+              position: 'end',
+            },
+            true,
+            targetNode.id,
+          );
+        }
+        return;
+      }
+    }
+
     if (
-      event.key === 'Tab' &&
+      (event.key === 'Backspace' || event.key === 'Delete') &&
       !event.shiftKey &&
       effectiveSelectedId !== null &&
       onDispatchCommand
@@ -440,13 +672,10 @@ export function MindMapApp({
         event.preventDefault();
         void dispatchAndFocus(
           {
-            type: 'insertChild',
+            type: 'deleteBranch',
             guard: buildPatchGuard(doc, targetNode),
-            title: messages.edit.newTopicTitle,
-            position: 'end',
           },
-          true,
-          targetNode.id,
+          false,
         );
         return;
       }
@@ -508,7 +737,7 @@ export function MindMapApp({
       setPopoverOpen((prev) => !prev);
     }
 
-    // TODO: [M2-b Classic Keymap 拡張] - Shift+Tab / Delete / Cmd+Arrow / Cmd+Z を FileCoordinator へ接続する
+    // TODO: [M2-c 枝コピペ・ノート編集] - Cmd/Ctrl+C/X/V 枝コピペと Cmd/Ctrl+Shift+T トピックノート直接編集（下書き保護付き）を接続する
   };
 
   // Fail-closed blocked screen
@@ -567,6 +796,8 @@ export function MindMapApp({
           editingSession={effectiveEditingSession}
           imeGuardWindowMs={imeGuardWindowMs}
           inlineEditorLabel={messages.edit.inlineEditorLabel}
+          toggleTaskAriaLabel={messages.edit.toggleTaskAriaLabel}
+          canEdit={onDispatchCommand !== undefined}
           dimmedNodeIds={visibility.dimmedNodeIds}
           matchedNodeIds={visibility.matchedNodeIds}
           effectiveCollapsedIds={visibility.effectiveCollapsedIds}
@@ -589,8 +820,11 @@ export function MindMapApp({
           onOpenLink={onOpenLink}
           onStartEdit={handleStartEdit}
           onCommitEdit={handleCommitEdit}
+          onSplitEdit={handleSplitEdit}
+          inlineSplitTriggerRef={inlineSplitTriggerRef}
           onCancelEdit={handleCancelEdit}
           onDiscardEdit={handleDiscardEdit}
+          onToggleTask={handleToggleTask}
         />
 
         {popoverOpen && selectedNode !== null && (

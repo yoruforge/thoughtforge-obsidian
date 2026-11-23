@@ -130,14 +130,23 @@ export default class ThoughtForgePlugin extends Plugin {
     );
 
     this.registerEvent(
-      this.app.vault.on('rename', (abstractFile) => {
+      this.app.vault.on('rename', (abstractFile, oldPath) => {
         if (!(abstractFile instanceof TFile) || abstractFile.extension.toLowerCase() !== 'md') {
           return;
         }
+        this.fileCoordinator?.renameHistoryPath(oldPath, abstractFile.path);
         for (const leaf of this.app.workspace.getLeavesOfType(MINDMAP_VIEW_TYPE)) {
           if (leaf.view instanceof MindMapView && leaf.view.file?.path === abstractFile.path) {
             void leaf.view.reloadFromFile(abstractFile);
           }
+        }
+      }),
+    );
+
+    this.registerEvent(
+      this.app.vault.on('delete', (abstractFile) => {
+        if (abstractFile instanceof TFile && abstractFile.extension.toLowerCase() === 'md') {
+          this.fileCoordinator?.clearHistory(abstractFile.path);
         }
       }),
     );

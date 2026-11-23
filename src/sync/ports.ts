@@ -5,7 +5,16 @@ export type SyncRejectCode =
   | PatchRejectReason
   | 'editor-dirty'
   | 'editor-state-unknown'
+  | 'nothing-to-undo'
+  | 'nothing-to-redo'
   | 'io-error';
+
+export interface FileHistoryStatus {
+  readonly canUndo: boolean;
+  readonly canRedo: boolean;
+  readonly undoCount: number;
+  readonly redoCount: number;
+}
 
 export interface BacklinkItem {
   readonly sourcePath: string;
@@ -50,4 +59,4 @@ export interface CommandDispatcher {
   dispatch(command: SemanticCommand): Promise<CommandDispatchOutcome>;
 }
 
-// TODO: [M2-b/M3 Sync 拡張] - Undo/Redo スタックと data.json 下書き退避（DraftStore）を FileCoordinator に接続する
+// TODO: [M2-c/M3 DraftStore] - data.json への下書き退避・回復（field:'title'|'note'）を FileCoordinator / MindMapView に接続する

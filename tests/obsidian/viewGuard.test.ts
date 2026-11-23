@@ -3,6 +3,7 @@ import {
   isStaleAsyncViewUpdate,
   shouldSkipReloadRender,
   shouldTriggerScopeF2,
+  shouldTriggerScopeInlineSplit,
   type RenderedFileSnapshot,
 } from '../../src/obsidian/viewGuard';
 
@@ -114,5 +115,12 @@ describe('viewGuard (P2-1 and P2-2 regressions)', () => {
         },
       ),
     ).toBe(false);
+  });
+
+  it('allows Mod+Enter inline split only when InlineEditor is active and not IME composing', () => {
+    expect(shouldTriggerScopeInlineSplit({ isComposing: false }, true)).toBe(true);
+    expect(shouldTriggerScopeInlineSplit({ isComposing: true }, true)).toBe(false);
+    expect(shouldTriggerScopeInlineSplit({ keyCode: 229 }, true)).toBe(false);
+    expect(shouldTriggerScopeInlineSplit({ isComposing: false }, false)).toBe(false);
   });
 });

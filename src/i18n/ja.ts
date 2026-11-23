@@ -5,6 +5,9 @@ export const ja: Messages = {
   commands: {
     openAsMap: '現在のノートをマインドマップで開く',
     openMarkdownBeside: 'マインドマップの横にMarkdownを開く',
+    undo: 'マインドマップの直前の編集を元に戻す（Undo）',
+    redo: 'マインドマップの編集をやり直す（Redo）',
+    toggleTask: '選択中トピックのタスク完了を切り替える',
   },
   toolbar: {
     zoomIn: '拡大',
@@ -25,7 +28,7 @@ export const ja: Messages = {
     topicsCount: 'トピック数',
     readOnlyBadge: '読み取り専用',
     m1PreviewMode: '閲覧MVP (M1 — 双方向編集はM2で有効化)',
-    m2EditReady: '編集可能（F2: 編集 / Tab: 子追加 / Enter: 兄弟追加）',
+    m2EditReady: '編集可能（F2: 編集 / Tab: 子 / Enter: 兄弟 / Del: 削除 / ⌘Z: 戻す）',
     largeMapWarning: '大規模マップ（3,001〜5,000トピック）: 応答性能の目標対象外です',
     filterMatches: '一致',
     noMatches: '一致するトピックがありません',
@@ -53,7 +56,8 @@ export const ja: Messages = {
     close: '閉じる',
     noteHeading: 'トピックノート',
     noteEmpty: 'トピックノートはありません。',
-    noteEditPlaceholder: 'ポップオーバーからの本文直接編集は M2 で有効になります（Cmd/Ctrl+Enter で確定）。',
+    noteEditPlaceholder:
+      '下書き保護付きの本文直接編集は M2-c で有効になります（Cmd/Ctrl+Enter で確定）。',
     unmappedHeading: '保護中の未対応ブロック',
     linksHeading: 'タイトル内のリンク',
     jumpToSource: 'Markdownの該当行へ移動',
@@ -81,6 +85,7 @@ export const ja: Messages = {
   edit: {
     newTopicTitle: '新しいトピック',
     inlineEditorLabel: 'トピック名を編集',
+    toggleTaskAriaLabel: 'タスク完了を切り替え',
     readOnlyRejected: 'このノートは読み取り専用のため、マップから編集できません。',
     staleTarget: '外部でノートが変更されました。最新状態を再読み込みしたため、もう一度実行してください。',
     newlineRejected: 'トピックタイトルに改行は含められません。',
@@ -90,6 +95,20 @@ export const ja: Messages = {
     unsavedInputDiscarded:
       '入力中にノートが変更されたため、トピック名を保存しませんでした。入力した内容: ',
     rootSiblingRejected: '中央テーマに兄弟は追加できません。子を追加するには Tab を押してください。',
+    cannotModifyRoot: '中央テーマにはこの構造操作を適用できません。',
+    notATask: '通常の Markdown タスク（[ ] / [x]）のみ切り替えられます。',
+    headingLevelOutOfRange: '見出しレベルが Markdown の範囲（H1〜H6）を超えるため操作できません。',
+    mixedHeadingListRejected: '見出しと箇条書きの境界をまたぐ変換・移動はできません。',
+    indentSensitiveRejected:
+      'コードブロック・表・Callout 等の保護ブロックが字下げで破損する恐れがあるため中止しました。',
+    cannotPromoteWithNoteOrUnmapped:
+      'ノート本文または保護ブロックを持つトピックは、子昇格の単体削除ができません。',
+    unmappedDeleteConfirmTitle: '保護ブロックを含む枝を削除しますか？',
+    unmappedDeleteConfirmBody:
+      'この枝にはコードブロック・表・Callout などの保護中の未対応ブロックが含まれています。枝ごと削除しますか？（直後なら Cmd/Ctrl+Z で元に戻せます）',
+    unmappedDeleteConfirmCancel: 'キャンセル',
+    unmappedDeleteConfirmDelete: '枝ごと削除',
+    undoStale: 'マップ外でノートが変更されたため、元に戻す／やり直す操作を中止しました。',
     editorDirty: '開いている Markdown エディタに未保存の変更があります。保存してからマップで編集してください。',
     editorUnknown: 'Markdown エディタの保存状態を確認できませんでした。ノートを保存してから再試行してください。',
     invariantRejected: 'Markdown 構造や保護ブロックの破損を防ぐため、編集を中止しました。',
