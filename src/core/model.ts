@@ -199,6 +199,14 @@ export interface DraftEntry {
   readonly filePath: string;
   readonly field: 'title' | 'note';
   readonly targetTitleRaw: string;
+  /**
+   * Structural identity snapshots captured when the draft was saved so duplicate-titled
+   * topics are matched fail-closed without guessing by nearest line number.
+   * All optional for backward compatibility with schemaVersion: 1 drafts.
+   */
+  readonly targetHeaderLine?: number;
+  readonly targetOwnRangeHash?: string;
+  readonly targetAncestorPath?: readonly string[];
   readonly baseContentHash: string;
   readonly text: string;
   readonly savedAt: number;

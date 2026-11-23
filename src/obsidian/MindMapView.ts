@@ -495,8 +495,20 @@ export class MindMapView extends FileView {
         drafts: fileDrafts,
         onSaveDraft: (input: SaveDraftInput) => draftStore.saveDraft(input),
         onDeleteDraft: (draftId: string) => draftStore.deleteDraft(draftId),
-        onDeleteMatchingDraft: (filePath: string, field: 'title' | 'note', targetTitleRaw: string) =>
-          draftStore.deleteMatchingDraft(filePath, field, targetTitleRaw),
+        onDeleteMatchingDraft: (
+          filePath: string,
+          field: 'title' | 'note',
+          targetTitleRaw: string,
+          targetHeaderLine: number,
+          targetAncestorPath?: readonly string[],
+        ) =>
+          draftStore.deleteMatchingDraft(
+            filePath,
+            field,
+            targetTitleRaw,
+            targetHeaderLine,
+            targetAncestorPath,
+          ),
         onCopyBranchSubtree: (node: TopicNode) => this.copyBranchSubtree(node),
         onReadBranchClipboard: () => this.readBranchClipboard(),
         onOpenMarkdown: (line?: number) => {

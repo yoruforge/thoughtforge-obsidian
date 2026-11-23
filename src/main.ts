@@ -23,6 +23,12 @@ function isValidDraftEntry(value: unknown): value is DraftEntry {
     typeof entry['filePath'] === 'string' &&
     (entry['field'] === 'title' || entry['field'] === 'note') &&
     typeof entry['targetTitleRaw'] === 'string' &&
+    (entry['targetHeaderLine'] === undefined || typeof entry['targetHeaderLine'] === 'number') &&
+    (entry['targetOwnRangeHash'] === undefined ||
+      typeof entry['targetOwnRangeHash'] === 'string') &&
+    (entry['targetAncestorPath'] === undefined ||
+      (Array.isArray(entry['targetAncestorPath']) &&
+        entry['targetAncestorPath'].every((seg) => typeof seg === 'string'))) &&
     typeof entry['baseContentHash'] === 'string' &&
     typeof entry['text'] === 'string' &&
     typeof entry['savedAt'] === 'number'

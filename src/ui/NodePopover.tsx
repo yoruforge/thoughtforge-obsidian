@@ -23,13 +23,14 @@ export interface NodePopoverProps {
   readonly imeGuardWindowMs: number;
   readonly startEditingNoteToken: number;
   readonly nodeDrafts: readonly DraftEntry[];
+  readonly ambiguousDrafts?: readonly DraftEntry[];
   readonly noteCommitTriggerRef?: MutableRefObject<((event: GuardableKeyEvent) => boolean) | null>;
   readonly onCommitNote?: (
     session: NoteEditingSession,
     nextNoteBody: string,
   ) => Promise<CommandDispatchOutcome>;
   readonly onRescueNoteDraft?: (session: NoteEditingSession, unsavedBody: string) => void;
-  readonly onRestoreTitleDraft?: (nodeId: string, draftText: string) => void;
+  readonly onRestoreTitleDraft?: (nodeId: string, draftText: string, draftId: string) => void;
   readonly onDeleteDraft?: (draftId: string) => void;
   readonly onClose: () => void;
   readonly onJumpToSource: (line: number) => void;
@@ -46,6 +47,7 @@ export function NodePopover({
   imeGuardWindowMs,
   startEditingNoteToken,
   nodeDrafts,
+  ambiguousDrafts = [],
   noteCommitTriggerRef,
   onCommitNote,
   onRescueNoteDraft,
@@ -114,9 +116,9 @@ export function NodePopover({
   }, [node.noteText, noteSession]);
 
   const beginNoteEdit = useCallback(
-    (prefill?: string) => {
+    (prefill?: string, restoredDraftId?: string) => {
       if (!editable) return;
-      const session = createNoteEditingSession(filePath, doc, node);
+      const session = createNoteEditingSession(filePath, doc, node, restoredDraftId);
       setNoteSession(session);
       setDraftText(prefill !== undefined ? prefill : (node.noteText ?? ''));
     },
@@ -129,7 +131,11 @@ export function NodePopover({
       lastStartTokenRef.current = startEditingNoteToken;
       if (editable) {
         const existingNoteDraft = nodeDrafts.find((d) => d.field === 'note');
-        beginNoteEdit(existingNoteDraft ? existingNoteDraft.text : (node.noteText ?? ''));
+        if (existingNoteDraft) {
+          beginNoteEdit(existingNoteDraft.text, existingNoteDraft.draftId);
+        } else {
+          beginNoteEdit(node.noteText ?? '');
+        }
       }
     }
   }, [startEditingNoteToken, editable, beginNoteEdit, node.noteText, nodeDrafts]);
@@ -293,7 +299,7 @@ export function NodePopover({
                   <button
                     type="button"
                     className="ito-btn ito-btn-primary ito-draft-restore-btn"
-                    onClick={() => beginNoteEdit(draft.text)}
+                    onClick={() => beginNoteEdit(draft.text, draft.draftId)}
                   >
                     {messages.popover.draftRestoreButton}
                   </button>
@@ -302,7 +308,7 @@ export function NodePopover({
                   <button
                     type="button"
                     className="ito-btn ito-btn-primary ito-draft-restore-btn"
-                    onClick={() => onRestoreTitleDraft(node.id, draft.text)}
+                    onClick={() => onRestoreTitleDraft(node.id, draft.text, draft.draftId)}
                   >
                     {messages.popover.draftRestoreButton}
                   </button>
@@ -319,6 +325,74 @@ export function NodePopover({
               </div>
             </div>
           ))}
+        </div>
+      )}
+
+      {ambiguousDrafts.length > 0 && (
+        <div
+          className="ito-draft-banner ito-draft-banner-ambiguous"
+          role="region"
+          aria-label={messages.popover.draftAmbiguousTitle}
+        >
+          <div className="ito-draft-banner-title">{messages.popover.draftAmbiguousTitle}</div>
+          <p className="ito-draft-banner-hint">{messages.popover.draftAmbiguousHint}</p>
+          {ambiguousDrafts.map((draft) => {
+            const contextParts: string[] = [];
+            if (draft.targetHeaderLine !== undefined) {
+              contextParts.push(
+                `${messages.popover.draftSavedContextLine} ${draft.targetHeaderLine + 1}`,
+              );
+            }
+            if (draft.targetAncestorPath !== undefined && draft.targetAncestorPath.length > 0) {
+              contextParts.push(
+                `${messages.popover.draftSavedContextParent}: ${draft.targetAncestorPath.join(' / ')}`,
+              );
+            }
+            return (
+              <div key={draft.draftId} className="ito-draft-item">
+                <div className="ito-draft-item-meta">
+                  <span className="ito-draft-field-badge">
+                    {draft.field === 'note'
+                      ? messages.popover.draftFieldNote
+                      : messages.popover.draftFieldTitle}
+                  </span>
+                  <span className="ito-draft-preview-text">{draft.text.slice(0, 80)}</span>
+                </div>
+                {contextParts.length > 0 && (
+                  <div className="ito-draft-context-meta">{contextParts.join(' ・ ')}</div>
+                )}
+                <div className="ito-draft-item-actions">
+                  {draft.field === 'note' && editable && (
+                    <button
+                      type="button"
+                      className="ito-btn ito-btn-primary ito-draft-restore-btn"
+                      onClick={() => beginNoteEdit(draft.text, draft.draftId)}
+                    >
+                      {messages.popover.draftRestoreHereButton}
+                    </button>
+                  )}
+                  {draft.field === 'title' && editable && onRestoreTitleDraft && (
+                    <button
+                      type="button"
+                      className="ito-btn ito-btn-primary ito-draft-restore-btn"
+                      onClick={() => onRestoreTitleDraft(node.id, draft.text, draft.draftId)}
+                    >
+                      {messages.popover.draftRestoreHereButton}
+                    </button>
+                  )}
+                  {onDeleteDraft && (
+                    <button
+                      type="button"
+                      className="ito-btn ito-draft-discard-btn"
+                      onClick={() => onDeleteDraft(draft.draftId)}
+                    >
+                      {messages.popover.draftDiscardButton}
+                    </button>
+                  )}
+                </div>
+              </div>
+            );
+          })}
         </div>
       )}
 

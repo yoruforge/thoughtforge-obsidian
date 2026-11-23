@@ -92,7 +92,12 @@ export interface DomNodeLayerProps {
   readonly onOpenLink: (link: TopicLink, newTab: boolean) => void;
   readonly onStartEdit: (nodeId: string) => void;
   readonly onCommitEdit: (session: EditingSession, nextTitle: string) => void;
-  readonly onSplitEdit: (session: EditingSession, leftTitle: string, rightTitle: string) => void;
+  readonly onSplitEdit: (
+    session: EditingSession,
+    leftTitle: string,
+    rightTitle: string,
+    fullValue: string,
+  ) => void;
   readonly inlineSplitTriggerRef?: MutableRefObject<((event: GuardableKeyEvent) => boolean) | null>;
   readonly onCancelEdit: () => void;
   readonly onDiscardEdit: (unsavedValue: string) => void;
@@ -290,8 +295,8 @@ export function DomNodeLayer({
                 onCommit={(nextTitle) => onCommitEdit(activeEditingSession, nextTitle)}
                 onSplit={
                   !isCenter
-                    ? (leftTitle, rightTitle) =>
-                        onSplitEdit(activeEditingSession, leftTitle, rightTitle)
+                    ? (leftTitle, rightTitle, fullValue) =>
+                        onSplitEdit(activeEditingSession, leftTitle, rightTitle, fullValue)
                     : undefined
                 }
                 splitTriggerRef={inlineSplitTriggerRef}

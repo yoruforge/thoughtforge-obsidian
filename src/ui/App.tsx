@@ -33,7 +33,11 @@ import {
   computeTopicNumbering,
 } from '../core/view/topicPresentation';
 import type { Messages } from '../i18n';
-import type { SaveDraftInput } from '../sync/DraftStore';
+import {
+  resolveDraftTarget,
+  type DraftResolution,
+  type SaveDraftInput,
+} from '../sync/DraftStore';
 import type { CommandDispatchOutcome } from '../sync/ports';
 import {
   buildCommitRenameCommand,
@@ -85,6 +89,8 @@ export interface MindMapAppProps {
     filePath: string,
     field: 'title' | 'note',
     targetTitleRaw: string,
+    targetHeaderLine: number,
+    targetAncestorPath?: readonly string[],
   ) => Promise<void>;
   readonly onCopyBranchSubtree?: (node: TopicNode) => Promise<boolean>;
   readonly onReadBranchClipboard?: () => Promise<string | null>;
@@ -194,6 +200,17 @@ export function MindMapApp({
   const effectiveEditingSession = useMemo(() => {
     return isEditingSessionValid(editingSession, filePath, doc) ? editingSession : null;
   }, [editingSession, filePath, doc]);
+
+  // Resolve each draft fail-closed: only uniquely identified drafts auto-attach to a topic;
+  // ambiguous or unmatched drafts require explicit user confirmation before restoring.
+  const draftResolutions = useMemo(() => {
+    const map = new Map<string, DraftResolution>();
+    if (!doc) return map;
+    for (const draft of drafts) {
+      map.set(draft.draftId, resolveDraftTarget(doc, draft));
+    }
+    return map;
+  }, [doc, drafts]);
 
   const availableTags = useMemo(() => (doc ? collectDocumentTags(doc) : []), [doc]);
   const textStats = useMemo(
@@ -414,8 +431,13 @@ export function MindMapApp({
       openInlineEditorAfter: boolean,
       expandParentId?: string,
     ): Promise<CommandDispatchOutcome> => {
-      if (!onDispatchCommand || isCommandInFlightRef.current) {
-        return { accepted: false, rejectCode: 'boundary-no-op' };
+      if (!onDispatchCommand) {
+        return { accepted: false, rejectCode: 'unsupported-command' };
+      }
+      if (isCommandInFlightRef.current) {
+        // Distinct from 'boundary-no-op' so callers keep (or draft) the user's input
+        // instead of treating the edit as already applied.
+        return { accepted: false, rejectCode: 'command-in-flight' };
       }
       const startedFilePath = filePathRef.current;
       isCommandInFlightRef.current = true;
@@ -507,6 +529,9 @@ export function MindMapApp({
           filePath: lastSession.filePath,
           field: 'title',
           targetTitleRaw: lastSession.initialTitleRaw,
+          targetHeaderLine: lastSession.targetHeaderLine,
+          targetOwnRangeHash: lastSession.guard.expectedOwnRangeHash,
+          targetAncestorPath: lastSession.targetAncestorPath,
           baseContentHash: lastSession.guard.expectedContentHash,
           text: unsavedValue,
         });
@@ -518,7 +543,14 @@ export function MindMapApp({
 
   const handleCommitEdit = useCallback(
     (session: EditingSession, nextTitle: string) => {
-      const { filePath: sessionFilePath, initialTitleRaw, guard } = session;
+      const {
+        filePath: sessionFilePath,
+        initialTitleRaw,
+        targetHeaderLine,
+        targetAncestorPath,
+        restoredDraftId,
+        guard,
+      } = session;
       setEditingSession(null);
       rootRef.current?.focus();
       if (!onDispatchCommand) return;
@@ -532,6 +564,9 @@ export function MindMapApp({
             filePath: sessionFilePath,
             field: 'title',
             targetTitleRaw: initialTitleRaw,
+            targetHeaderLine,
+            targetOwnRangeHash: guard.expectedOwnRangeHash,
+            targetAncestorPath,
             baseContentHash: guard.expectedContentHash,
             text: nextTitle,
           });
@@ -541,12 +576,24 @@ export function MindMapApp({
       }
       void dispatchAndFocus(command, false).then((outcome) => {
         if (outcome.accepted) {
-          void onDeleteMatchingDraft?.(sessionFilePath, 'title', initialTitleRaw);
+          void onDeleteMatchingDraft?.(
+            sessionFilePath,
+            'title',
+            initialTitleRaw,
+            targetHeaderLine,
+            targetAncestorPath,
+          );
+          if (restoredDraftId !== undefined) {
+            void onDeleteDraft?.(restoredDraftId);
+          }
         } else if (outcome.rejectCode !== 'boundary-no-op' && onSaveDraft) {
           void onSaveDraft({
             filePath: sessionFilePath,
             field: 'title',
             targetTitleRaw: initialTitleRaw,
+            targetHeaderLine,
+            targetOwnRangeHash: guard.expectedOwnRangeHash,
+            targetAncestorPath,
             baseContentHash: guard.expectedContentHash,
             text: nextTitle,
           });
@@ -554,7 +601,15 @@ export function MindMapApp({
         }
       });
     },
-    [onDispatchCommand, dispatchAndFocus, onSaveDraft, onDeleteMatchingDraft, onNotify, messages],
+    [
+      onDispatchCommand,
+      dispatchAndFocus,
+      onSaveDraft,
+      onDeleteMatchingDraft,
+      onDeleteDraft,
+      onNotify,
+      messages,
+    ],
   );
 
   const handleCommitNote = useCallback(
@@ -562,7 +617,14 @@ export function MindMapApp({
       session: NoteEditingSession,
       nextNoteBody: string,
     ): Promise<CommandDispatchOutcome> => {
-      const { filePath: sessionFilePath, targetTitleRaw, guard } = session;
+      const {
+        filePath: sessionFilePath,
+        targetTitleRaw,
+        targetHeaderLine,
+        targetAncestorPath,
+        restoredDraftId,
+        guard,
+      } = session;
       if (!onDispatchCommand) {
         return { accepted: false, rejectCode: 'unsupported-command' };
       }
@@ -573,6 +635,9 @@ export function MindMapApp({
             filePath: sessionFilePath,
             field: 'note',
             targetTitleRaw,
+            targetHeaderLine,
+            targetOwnRangeHash: guard.expectedOwnRangeHash,
+            targetAncestorPath,
             baseContentHash: guard.expectedContentHash,
             text: nextNoteBody,
           });
@@ -583,12 +648,24 @@ export function MindMapApp({
 
       const outcome = await dispatchAndFocus(command, false);
       if (outcome.accepted) {
-        void onDeleteMatchingDraft?.(sessionFilePath, 'note', targetTitleRaw);
+        void onDeleteMatchingDraft?.(
+          sessionFilePath,
+          'note',
+          targetTitleRaw,
+          targetHeaderLine,
+          targetAncestorPath,
+        );
+        if (restoredDraftId !== undefined) {
+          void onDeleteDraft?.(restoredDraftId);
+        }
       } else if (outcome.rejectCode !== 'boundary-no-op' && onSaveDraft) {
         await onSaveDraft({
           filePath: sessionFilePath,
           field: 'note',
           targetTitleRaw,
+          targetHeaderLine,
+          targetOwnRangeHash: guard.expectedOwnRangeHash,
+          targetAncestorPath,
           baseContentHash: guard.expectedContentHash,
           text: nextNoteBody,
         });
@@ -598,7 +675,15 @@ export function MindMapApp({
       }
       return outcome;
     },
-    [onDispatchCommand, dispatchAndFocus, onSaveDraft, onDeleteMatchingDraft, onNotify, messages],
+    [
+      onDispatchCommand,
+      dispatchAndFocus,
+      onSaveDraft,
+      onDeleteMatchingDraft,
+      onDeleteDraft,
+      onNotify,
+      messages,
+    ],
   );
 
   const handleRescueNoteDraft = useCallback(
@@ -608,6 +693,9 @@ export function MindMapApp({
         filePath: session.filePath,
         field: 'note',
         targetTitleRaw: session.targetTitleRaw,
+        targetHeaderLine: session.targetHeaderLine,
+        targetOwnRangeHash: session.guard.expectedOwnRangeHash,
+        targetAncestorPath: session.targetAncestorPath,
         baseContentHash: session.guard.expectedContentHash,
         text: unsavedBody,
       });
@@ -617,29 +705,41 @@ export function MindMapApp({
   );
 
   const handleRestoreTitleDraft = useCallback(
-    (nodeId: string, draftText: string) => {
+    (nodeId: string, draftText: string, draftId: string) => {
       if (!doc || !onDispatchCommand || doc.readOnlyReasons.length > 0) return;
       const node = doc.nodes.get(nodeId);
       if (!node) return;
       setPopoverOpen(false);
       setStylesOpen(false);
       setSelectedId(nodeId);
-      setEditingSession(createEditingSession(filePath, doc, node, draftText));
+      setEditingSession(createEditingSession(filePath, doc, node, draftText, draftId));
     },
     [doc, filePath, onDispatchCommand],
   );
 
   const handleInspectDrafts = useCallback(() => {
     if (!doc || drafts.length === 0) return;
-    const firstDraft = drafts[0];
-    if (!firstDraft) return;
-    const matched = [...doc.nodes.values()].find(
-      (n) => n.titleRaw === firstDraft.targetTitleRaw,
-    );
-    setSelectedId(matched?.id ?? doc.rootId);
+    let targetId: string | null = null;
+    for (const draft of drafts) {
+      const res = draftResolutions.get(draft.draftId);
+      if (res?.status === 'matched') {
+        targetId = res.nodeId;
+        break;
+      }
+    }
+    if (targetId === null) {
+      for (const draft of drafts) {
+        const res = draftResolutions.get(draft.draftId);
+        if (res?.status === 'ambiguous' && res.candidateNodeIds[0] !== undefined) {
+          targetId = res.candidateNodeIds[0];
+          break;
+        }
+      }
+    }
+    setSelectedId(targetId ?? doc.rootId);
     setStylesOpen(false);
     setPopoverOpen(true);
-  }, [doc, drafts]);
+  }, [doc, drafts, draftResolutions]);
 
   const handleReparentNode = useCallback(
     (nodeId: string, targetParentId: string, index: number) => {
@@ -724,21 +824,74 @@ export function MindMapApp({
   }, [doc, effectiveSelectedId]);
 
   const handleSplitEdit = useCallback(
-    (session: EditingSession, leftTitle: string, rightTitle: string) => {
+    (session: EditingSession, leftTitle: string, rightTitle: string, fullValue: string) => {
+      const {
+        filePath: sessionFilePath,
+        initialTitleRaw,
+        targetHeaderLine,
+        targetAncestorPath,
+        restoredDraftId,
+        guard,
+      } = session;
       setEditingSession(null);
       rootRef.current?.focus();
       if (!onDispatchCommand) return;
+
+      const rescueFullInput = (): void => {
+        if (onSaveDraft && fullValue.trim().length > 0) {
+          void onSaveDraft({
+            filePath: sessionFilePath,
+            field: 'title',
+            targetTitleRaw: initialTitleRaw,
+            targetHeaderLine,
+            targetOwnRangeHash: guard.expectedOwnRangeHash,
+            targetAncestorPath,
+            baseContentHash: guard.expectedContentHash,
+            text: fullValue,
+          });
+        }
+      };
+
       const command = buildSplitSiblingCommand(session, filePathRef.current, leftTitle, rightTitle);
       if (command === null) {
+        if (fullValue.trim().length > 0 && fullValue.trim() !== initialTitleRaw) {
+          rescueFullInput();
+          onNotify?.(messages.edit.draftSavedNotice);
+        }
         return;
       }
       if (!isEditingSessionValid(session, filePathRef.current, docRef.current)) {
-        handleDiscardEdit(`${leftTitle} ${rightTitle}`);
+        rescueFullInput();
+        onNotify?.(`${messages.edit.unsavedInputDiscarded}${fullValue}`);
         return;
       }
-      void dispatchAndFocus(command, false);
+      void dispatchAndFocus(command, false).then((outcome) => {
+        if (outcome.accepted) {
+          void onDeleteMatchingDraft?.(
+            sessionFilePath,
+            'title',
+            initialTitleRaw,
+            targetHeaderLine,
+            targetAncestorPath,
+          );
+          if (restoredDraftId !== undefined) {
+            void onDeleteDraft?.(restoredDraftId);
+          }
+        } else if (outcome.rejectCode !== 'boundary-no-op') {
+          rescueFullInput();
+          onNotify?.(messages.edit.draftSavedNotice);
+        }
+      });
     },
-    [onDispatchCommand, dispatchAndFocus, handleDiscardEdit],
+    [
+      onDispatchCommand,
+      dispatchAndFocus,
+      onSaveDraft,
+      onDeleteMatchingDraft,
+      onDeleteDraft,
+      onNotify,
+      messages,
+    ],
   );
 
   const handleCancelEdit = useCallback(() => {
@@ -1281,7 +1434,18 @@ export function MindMapApp({
             canEdit={onDispatchCommand !== undefined}
             imeGuardWindowMs={settings.imeGuardWindowMs}
             startEditingNoteToken={noteEditRequestToken}
-            nodeDrafts={drafts.filter((d) => d.targetTitleRaw === selectedNode.titleRaw)}
+            nodeDrafts={drafts.filter((d) => {
+              const res = draftResolutions.get(d.draftId);
+              return res?.status === 'matched' && res.nodeId === selectedNode.id;
+            })}
+            ambiguousDrafts={drafts.filter((d) => {
+              const res = draftResolutions.get(d.draftId);
+              if (!res) return false;
+              if (res.status === 'ambiguous') {
+                return res.candidateNodeIds.includes(selectedNode.id);
+              }
+              return res.status === 'unmatched';
+            })}
             noteCommitTriggerRef={noteCommitTriggerRef}
             onCommitNote={handleCommitNote}
             onRescueNoteDraft={handleRescueNoteDraft}

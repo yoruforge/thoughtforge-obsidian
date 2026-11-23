@@ -682,6 +682,31 @@
   color: #d97706;
 }
 
+.ito-draft-banner-ambiguous {
+  border-color: rgba(220, 38, 38, 0.5);
+  background: rgba(239, 68, 68, 0.1);
+}
+
+.ito-draft-banner-ambiguous .ito-draft-banner-title {
+  color: #dc2626;
+}
+
+.ito-theme-dark-solarized .ito-draft-banner-ambiguous .ito-draft-banner-title {
+  color: #f87171;
+}
+
+.ito-draft-banner-hint {
+  margin: 0;
+  font-size: 11px;
+  line-height: 1.4;
+  color: var(--text-muted);
+}
+
+.ito-draft-context-meta {
+  font-size: 10px;
+  color: var(--text-muted);
+}
+
 .ito-draft-item {
   display: flex;
   flex-direction: column;

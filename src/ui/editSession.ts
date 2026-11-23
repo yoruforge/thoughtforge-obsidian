@@ -1,12 +1,19 @@
 import type { MindMapDocument, TopicNode } from '../core/model';
 import type { PatchGuard, SemanticCommand } from '../core/patch/commands';
+import { buildAncestorPath } from '../sync/DraftStore';
 
 export interface EditingSession {
   readonly filePath: string;
   readonly nodeId: string;
   readonly initialTitleRaw: string;
+  /** Header line of the topic when editing began; recorded for draft context. */
+  readonly targetHeaderLine: number;
+  /** Ordered ancestor titles from root to direct parent for fail-closed draft matching. */
+  readonly targetAncestorPath: readonly string[];
   /** Optional restored draft text to prefill into InlineEditor while keeping the original CAS guard. */
   readonly draftPrefillValue?: string;
+  /** Draft that was restored into this session; deleted once the commit succeeds. */
+  readonly restoredDraftId?: string;
   readonly guard: PatchGuard;
 }
 
@@ -14,7 +21,13 @@ export interface NoteEditingSession {
   readonly filePath: string;
   readonly nodeId: string;
   readonly targetTitleRaw: string;
+  /** Header line of the topic when editing began; recorded for draft context. */
+  readonly targetHeaderLine: number;
+  /** Ordered ancestor titles from root to direct parent for fail-closed draft matching. */
+  readonly targetAncestorPath: readonly string[];
   readonly initialNoteText: string;
+  /** Draft that was restored into this session; deleted once the commit succeeds. */
+  readonly restoredDraftId?: string;
   readonly guard: PatchGuard;
 }
 
@@ -36,12 +49,16 @@ export function createEditingSession(
   doc: MindMapDocument,
   node: TopicNode,
   draftPrefillValue?: string,
+  restoredDraftId?: string,
 ): EditingSession {
   return {
     filePath,
     nodeId: node.id,
     initialTitleRaw: node.titleRaw,
+    targetHeaderLine: node.headerLine,
+    targetAncestorPath: buildAncestorPath(doc, node),
     draftPrefillValue,
+    restoredDraftId,
     guard: buildPatchGuard(doc, node),
   };
 }
@@ -50,11 +67,15 @@ export function createNoteEditingSession(
   filePath: string,
   doc: MindMapDocument,
   node: TopicNode,
+  restoredDraftId?: string,
 ): NoteEditingSession {
   return {
     filePath,
     nodeId: node.id,
     targetTitleRaw: node.titleRaw,
+    targetHeaderLine: node.headerLine,
+    targetAncestorPath: buildAncestorPath(doc, node),
+    restoredDraftId,
     initialNoteText: node.noteText ?? '',
     guard: buildPatchGuard(doc, node),
   };

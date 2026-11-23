@@ -7,7 +7,9 @@ export type SyncRejectCode =
   | 'editor-state-unknown'
   | 'nothing-to-undo'
   | 'nothing-to-redo'
-  | 'io-error';
+  | 'io-error'
+  /** Another map command is still being written; nothing was applied. */
+  | 'command-in-flight';
 
 export interface FileHistoryStatus {
   readonly canUndo: boolean;

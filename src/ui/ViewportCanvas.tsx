@@ -57,7 +57,12 @@ export interface ViewportCanvasProps {
   readonly onOpenLink: (link: TopicLink, newTab: boolean) => void;
   readonly onStartEdit: (nodeId: string) => void;
   readonly onCommitEdit: (session: EditingSession, nextTitle: string) => void;
-  readonly onSplitEdit: (session: EditingSession, leftTitle: string, rightTitle: string) => void;
+  readonly onSplitEdit: (
+    session: EditingSession,
+    leftTitle: string,
+    rightTitle: string,
+    fullValue: string,
+  ) => void;
   readonly inlineSplitTriggerRef?: MutableRefObject<((event: GuardableKeyEvent) => boolean) | null>;
   readonly onCancelEdit: () => void;
   readonly onDiscardEdit: (unsavedValue: string) => void;
@@ -148,6 +153,8 @@ export function ViewportCanvas({
         event.preventDefault();
         event.stopPropagation();
         pendingNodeDragRef.current = null;
+        // No click follows a keyboard cancel, so stop suppressing node clicks now.
+        suppressNextNodeClickRef.current = false;
         setActiveNodeDrag(null);
       }
     };
@@ -287,6 +294,8 @@ export function ViewportCanvas({
         if (event.currentTarget.hasPointerCapture(event.pointerId)) {
           event.currentTarget.releasePointerCapture(event.pointerId);
         }
+        // Button was released outside the map: no node click follows, so stop suppressing.
+        suppressNextNodeClickRef.current = false;
         setActiveNodeDrag(null);
         return;
       }
