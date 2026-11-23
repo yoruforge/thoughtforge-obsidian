@@ -1,6 +1,6 @@
 import type { MindMapDocument, TopicNode } from '../core/model';
 import type { PatchGuard, SemanticCommand } from '../core/patch/commands';
-import { buildAncestorPath } from '../sync/DraftStore';
+import { buildAncestorPath, hasIdenticalStructuralSibling } from '../sync/DraftStore';
 
 export interface EditingSession {
   readonly filePath: string;
@@ -10,6 +10,8 @@ export interface EditingSession {
   readonly targetHeaderLine: number;
   /** Ordered ancestor titles from root to direct parent for fail-closed draft matching. */
   readonly targetAncestorPath: readonly string[];
+  /** True if another sibling under the same parent already shared identical (titleRaw, ownRangeHash). */
+  readonly targetHadIdenticalSibling: boolean;
   /** Optional restored draft text to prefill into InlineEditor while keeping the original CAS guard. */
   readonly draftPrefillValue?: string;
   /** Draft that was restored into this session; deleted once the commit succeeds. */
@@ -25,6 +27,8 @@ export interface NoteEditingSession {
   readonly targetHeaderLine: number;
   /** Ordered ancestor titles from root to direct parent for fail-closed draft matching. */
   readonly targetAncestorPath: readonly string[];
+  /** True if another sibling under the same parent already shared identical (titleRaw, ownRangeHash). */
+  readonly targetHadIdenticalSibling: boolean;
   readonly initialNoteText: string;
   /** Draft that was restored into this session; deleted once the commit succeeds. */
   readonly restoredDraftId?: string;
@@ -57,6 +61,7 @@ export function createEditingSession(
     initialTitleRaw: node.titleRaw,
     targetHeaderLine: node.headerLine,
     targetAncestorPath: buildAncestorPath(doc, node),
+    targetHadIdenticalSibling: hasIdenticalStructuralSibling(doc, node),
     draftPrefillValue,
     restoredDraftId,
     guard: buildPatchGuard(doc, node),
@@ -75,6 +80,7 @@ export function createNoteEditingSession(
     targetTitleRaw: node.titleRaw,
     targetHeaderLine: node.headerLine,
     targetAncestorPath: buildAncestorPath(doc, node),
+    targetHadIdenticalSibling: hasIdenticalStructuralSibling(doc, node),
     restoredDraftId,
     initialNoteText: node.noteText ?? '',
     guard: buildPatchGuard(doc, node),

@@ -501,6 +501,8 @@ export class MindMapView extends FileView {
           targetTitleRaw: string,
           targetHeaderLine: number,
           targetAncestorPath?: readonly string[],
+          targetOwnRangeHash?: string,
+          baseContentHash?: string,
         ) =>
           draftStore.deleteMatchingDraft(
             filePath,
@@ -508,6 +510,8 @@ export class MindMapView extends FileView {
             targetTitleRaw,
             targetHeaderLine,
             targetAncestorPath,
+            targetOwnRangeHash,
+            baseContentHash,
           ),
         onCopyBranchSubtree: (node: TopicNode) => this.copyBranchSubtree(node),
         onReadBranchClipboard: () => this.readBranchClipboard(),

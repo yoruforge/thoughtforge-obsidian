@@ -207,6 +207,12 @@ export interface DraftEntry {
   readonly targetHeaderLine?: number;
   readonly targetOwnRangeHash?: string;
   readonly targetAncestorPath?: readonly string[];
+  /**
+   * True when another topic under the same ancestorPath already shared identical
+   * (titleRaw, ownRangeHash) when the draft was created (e.g. duplicate empty siblings).
+   * Once the document changes, such drafts always fail closed as 'ambiguous'.
+   */
+  readonly targetHadIdenticalSibling?: boolean;
   readonly baseContentHash: string;
   readonly text: string;
   readonly savedAt: number;
