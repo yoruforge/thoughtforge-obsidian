@@ -234,19 +234,32 @@ export function resolveTopicBySubpath(doc: MindMapDocument, rawSubpath: string):
 /**
  * Splits a raw Obsidian link target (`Note#Heading`, `#^blk-1`, `folder/note.md#Sub`)
  * into its note path portion and optional subpath (without leading `#`).
+ *
+ * Preserves literal `%20` in `pathPart` by default (`decodePath: false`) because Obsidian
+ * wikilink targets (`[[Source%20X]]`) and `metadataCache` `cache.links`/`cache.embeds` treat
+ * filenames literally; callers handling raw Markdown URL targets (`[label](path%20name.md)`)
+ * opt into `{ decodePath: true }`.
  */
-export function splitLinkTargetSubpath(rawTarget: string): {
+export function splitLinkTargetSubpath(
+  rawTarget: string,
+  options?: { readonly decodePath?: boolean },
+): {
   readonly pathPart: string;
   readonly subpath: string | undefined;
 } {
+  const decodePath = options?.decodePath ?? false;
   const hashIndex = rawTarget.indexOf('#');
   if (hashIndex < 0) {
-    return { pathPart: safeDecodeSubpath(rawTarget).trim(), subpath: undefined };
+    const trimmed = rawTarget.trim();
+    return {
+      pathPart: decodePath ? safeDecodeSubpath(trimmed).trim() : trimmed,
+      subpath: undefined,
+    };
   }
-  const pathPart = safeDecodeSubpath(rawTarget.slice(0, hashIndex)).trim();
+  const rawPath = rawTarget.slice(0, hashIndex).trim();
   const rawSub = rawTarget.slice(hashIndex + 1).trim();
   return {
-    pathPart,
+    pathPart: decodePath ? safeDecodeSubpath(rawPath).trim() : rawPath,
     subpath: rawSub.length > 0 ? rawSub : undefined,
   };
 }

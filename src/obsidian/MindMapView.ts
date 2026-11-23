@@ -873,7 +873,9 @@ export class MindMapView extends FileView {
       return;
     }
 
-    const { pathPart, subpath } = splitLinkTargetSubpath(link.target);
+    const { pathPart, subpath } = splitLinkTargetSubpath(link.target, {
+      decodePath: link.kind === 'markdown',
+    });
     const destination =
       pathPart.length === 0
         ? sourceFile

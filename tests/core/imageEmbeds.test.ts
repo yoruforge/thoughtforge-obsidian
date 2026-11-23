@@ -30,6 +30,20 @@ describe('imageEmbeds (M4-b safe embed extraction & layout reservation)', () => 
     ]);
   });
 
+  it('preserves literal %20 in wiki embeds while decoding percent-encoded Markdown image URLs (Codex #afabc3ec)', () => {
+    const wikiMixed = '![[Visual%20X.png]] and ![[Visual X.png]]';
+    expect(extractImageEmbeds(wikiMixed)).toEqual([
+      { target: 'Visual%20X.png', alt: 'Visual%20X.png' },
+      { target: 'Visual X.png', alt: 'Visual X.png' },
+    ]);
+
+    const mdMixed = '![space](Visual%20X.png) and ![percent](Visual%2520X.png)';
+    expect(extractImageEmbeds(mdMixed)).toEqual([
+      { target: 'Visual X.png', alt: 'space' },
+      { target: 'Visual%20X.png', alt: 'percent' },
+    ]);
+  });
+
   it('supports CommonMark balanced parentheses, angle-bracket destinations, and multi-backtick code spans (Codex PR #17 P2)', () => {
     const validTricky = [
       'Paren ![diagram](pic(1).png)',

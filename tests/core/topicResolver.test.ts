@@ -99,10 +99,18 @@ describe('topicResolver (M4-a cursor-to-map & link subpath resolution)', () => {
     expect(resolveTopicBySubpath(doc, '')).toBeNull();
   });
 
-  it('splits link targets with percent-decoded paths and optional subpaths, and collects ancestors', () => {
-    expect(splitLinkTargetSubpath('My%20Note.md#Heading%201')).toEqual({
+  it('preserves literal %20 in paths by default and decodes Markdown URLs only with decodePath: true, and collects ancestors', () => {
+    expect(splitLinkTargetSubpath('Source%20X.md#Heading%201')).toEqual({
+      pathPart: 'Source%20X.md',
+      subpath: 'Heading%201',
+    });
+    expect(splitLinkTargetSubpath('My%20Note.md#Heading%201', { decodePath: true })).toEqual({
       pathPart: 'My Note.md',
       subpath: 'Heading%201',
+    });
+    expect(splitLinkTargetSubpath('Source%2520X.md', { decodePath: true })).toEqual({
+      pathPart: 'Source%20X.md',
+      subpath: undefined,
     });
     expect(splitLinkTargetSubpath('#^blk-1')).toEqual({
       pathPart: '',

@@ -241,4 +241,123 @@ describe('ObsidianMetadataProvider (M4-b)', () => {
     );
     expect(elapsedMs).toBeLessThan(200);
   });
+
+  it('distinguishes literal %20 image files and backlink targets from space-named siblings in fresh and updating cache modes', () => {
+    const percentImg = makeFakeTFile('Visual%20X.png');
+    const spaceImg = makeFakeTFile('Visual X.png');
+    const noteFile = makeFakeTFile('note.md');
+    const percentTarget = makeFakeTFile('Target%20X.md');
+    const spaceTarget = makeFakeTFile('Target X.md');
+    const percentLinker = makeFakeTFile('linker-percent.md');
+    const spaceLinker = makeFakeTFile('linker-space.md');
+
+    const files = new Map<string, TFile>([
+      [percentImg.path, percentImg],
+      [spaceImg.path, spaceImg],
+      [noteFile.path, noteFile],
+      [percentTarget.path, percentTarget],
+      [spaceTarget.path, spaceTarget],
+      [percentLinker.path, percentLinker],
+      [spaceLinker.path, spaceLinker],
+    ]);
+
+    const fileCaches = new Map<string, CachedMetadata>([
+      [
+        noteFile.path,
+        {
+          embeds: [
+            {
+              link: 'Visual%20X.png',
+              original: '![[Visual%20X.png]]',
+              position: { start: { line: 1, col: 0, offset: 0 }, end: { line: 1, col: 19, offset: 19 } },
+            },
+            {
+              link: 'Visual X.png',
+              original: '![[Visual X.png]]',
+              position: { start: { line: 2, col: 0, offset: 0 }, end: { line: 2, col: 17, offset: 17 } },
+            },
+          ],
+        },
+      ],
+      [
+        percentLinker.path,
+        {
+          links: [
+            {
+              link: 'Target%20X#Focus',
+              original: '[[Target%20X#Focus]]',
+              position: { start: { line: 0, col: 0, offset: 0 }, end: { line: 0, col: 18, offset: 18 } },
+            },
+          ],
+        },
+      ],
+      [
+        spaceLinker.path,
+        {
+          links: [
+            {
+              link: 'Target X#Focus',
+              original: '[[Target X#Focus]]',
+              position: { start: { line: 0, col: 0, offset: 0 }, end: { line: 0, col: 16, offset: 16 } },
+            },
+          ],
+        },
+      ],
+    ]);
+
+    const provider = new ObsidianMetadataProvider(
+      createMockApp({
+        files,
+        fileCaches,
+        resolvedLinks: {
+          [percentLinker.path]: { [percentTarget.path]: 1 },
+          [spaceLinker.path]: { [spaceTarget.path]: 1 },
+        },
+        resourceSuffixByPath: new Map(),
+      }),
+    );
+
+    const imgDoc = parseOk(
+      ['# Root', '- Pic Percent ![[Visual%20X.png]]', '- Pic Space ![[Visual X.png]]', ''].join(
+        '\n',
+      ),
+      'note',
+    );
+    const picPercentNode = [...imgDoc.nodes.values()].find((n) =>
+      n.titleRaw.includes('Pic Percent'),
+    );
+    const picSpaceNode = [...imgDoc.nodes.values()].find((n) => n.titleRaw.includes('Pic Space'));
+    expect(picPercentNode && picSpaceNode).toBeTruthy();
+    if (!picPercentNode || !picSpaceNode) return;
+
+    // Fresh metadataCache mode
+    const freshImgs = provider.getResolvedNodeImages(noteFile.path, imgDoc);
+    expect(freshImgs.get(picPercentNode.id)?.[0]?.src).toBe('app://local/vault/Visual%2520X.png?1');
+    expect(freshImgs.get(picSpaceNode.id)?.[0]?.src).toBe('app://local/vault/Visual%20X.png?1');
+
+    // Updating fallback mode (uses extractNodeImageEmbeds + getResolvedImageSrc)
+    provider.markFileUpdating(noteFile.path);
+    const fallbackImgs = provider.getResolvedNodeImages(noteFile.path, imgDoc);
+    expect(fallbackImgs.get(picPercentNode.id)?.[0]?.src).toBe(
+      'app://local/vault/Visual%2520X.png?1',
+    );
+    expect(fallbackImgs.get(picSpaceNode.id)?.[0]?.src).toBe('app://local/vault/Visual%20X.png?1');
+
+    // Backlinks matching on Target%20X.md vs Target X.md
+    const targetPercentDoc = parseOk('# Target%20X\n## Focus\n', 'Target%20X');
+    const focusNode = [...targetPercentDoc.nodes.values()].find((n) => n.titleRaw === 'Focus');
+    expect(focusNode).toBeDefined();
+    if (!focusNode) return;
+    const backlinks = provider.getBacklinks(percentTarget.path, {
+      doc: targetPercentDoc,
+      nodeId: focusNode.id,
+    });
+    expect(backlinks).toEqual([
+      {
+        sourcePath: 'linker-percent.md',
+        sourceTitle: 'linker-percent',
+        targetsSpecificAnchor: true,
+      },
+    ]);
+  });
 });

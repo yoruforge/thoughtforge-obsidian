@@ -204,10 +204,15 @@ export function extractImageEmbeds(text: string): readonly ImageEmbedRef[] {
   const results: ImageEmbedRef[] = [];
   const seen = new Set<string>();
 
-  const pushUnique = (rawTarget: string, alt: string, requestedWidth?: number): void => {
+  const pushUnique = (
+    rawTarget: string,
+    alt: string,
+    decodeTarget: boolean,
+    requestedWidth?: number,
+  ): void => {
     const trimmed = rawTarget.trim();
     if (!isSafeVaultImagePath(trimmed)) return;
-    const target = safeDecode(trimmed).trim();
+    const target = (decodeTarget ? safeDecode(trimmed) : trimmed).trim();
     const key = target.toLowerCase();
     if (seen.has(key)) return;
     seen.add(key);
@@ -268,7 +273,7 @@ export function extractImageEmbeds(text: string): readonly ImageEmbedRef[] {
             alt = seg;
           }
         }
-        pushUnique(rawTarget, alt, requestedWidth);
+        pushUnique(rawTarget, alt, false, requestedWidth);
         i = closeIdx + 2;
         continue;
       }
@@ -278,7 +283,7 @@ export function extractImageEmbeds(text: string): readonly ImageEmbedRef[] {
     if (ch === '!' && text[i + 1] === '[' && text[i + 2] !== '[') {
       const parsed = parseMarkdownImageAt(text, i);
       if (parsed !== null) {
-        pushUnique(parsed.rawTarget, parsed.alt.trim());
+        pushUnique(parsed.rawTarget, parsed.alt.trim(), true);
         i = parsed.end;
         continue;
       }
