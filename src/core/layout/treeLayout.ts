@@ -19,7 +19,7 @@ export interface NodeSize {
 }
 
 export interface NodeSizeMeasurer {
-  measure(node: TopicNode, depth: number, numberLabel?: string): NodeSize;
+  measure(node: TopicNode, depth: number, numberLabel?: string, hasThumbnail?: boolean): NodeSize;
 }
 
 export interface LayoutSpacing {
@@ -35,6 +35,8 @@ export interface LayoutOptions {
   readonly layoutMode?: MapLayoutMode;
   readonly edgeStyle?: BranchEdgeStyle;
   readonly numberingLabels?: ReadonlyMap<string, string>;
+  /** Node IDs rendering an inline image thumbnail card inside the topic box. */
+  readonly thumbnailNodeIds?: ReadonlySet<string>;
 }
 
 export const DEFAULT_LAYOUT_SPACING: LayoutSpacing = {
@@ -55,6 +57,9 @@ export interface ViewportRect {
 
 const MAX_NODE_WIDTH = 280;
 const MIN_NODE_WIDTH = 72;
+const MIN_THUMBNAIL_NODE_WIDTH = 168;
+/** Reserved vertical slot for fixed 72px image thumbnail + 6px top margin + 4px safety. */
+export const THUMBNAIL_SLOT_HEIGHT = 82;
 
 /**
  * Estimates CJK/Latin mixed display width without touching the DOM so layout
@@ -79,7 +84,7 @@ export function estimateTextUnits(text: string): number {
 }
 
 export const defaultNodeSizeMeasurer: NodeSizeMeasurer = {
-  measure(node: TopicNode, depth: number, numberLabel?: string): NodeSize {
+  measure(node: TopicNode, depth: number, numberLabel?: string, hasThumbnail = false): NodeSize {
     const style = resolveLevelStyle(depth);
     const title = node.displayTitle.length > 0 ? node.displayTitle : '(untitled)';
     const borderX = style.shape === 'underline' ? 0 : Math.ceil(style.borderWidthPx * 2);
@@ -130,8 +135,13 @@ export const defaultNodeSizeMeasurer: NodeSizeMeasurer = {
       width = MAX_NODE_WIDTH;
     }
 
+    if (hasThumbnail) {
+      width = Math.max(width, MIN_THUMBNAIL_NODE_WIDTH);
+    }
+
     const lineHeight = Math.ceil(style.fontSizePx * 1.45);
-    const height = wrappedLines * lineHeight + style.paddingY * 2 + borderY;
+    const thumbnailExtraHeight = hasThumbnail ? THUMBNAIL_SLOT_HEIGHT : 0;
+    const height = wrappedLines * lineHeight + style.paddingY * 2 + borderY + thumbnailExtraHeight;
     return { width, height };
   },
 };
@@ -289,6 +299,7 @@ function computeOrgChartLayout(
   spacing: LayoutSpacing,
   edgeStyle: BranchEdgeStyle,
   numberingLabels?: ReadonlyMap<string, string>,
+  thumbnailNodeIds?: ReadonlySet<string>,
 ): LayoutResult {
   const sizes = new Map<string, NodeSize>();
   const columnWidths = new Map<string, number>();
@@ -296,7 +307,12 @@ function computeOrgChartLayout(
   const measureOrgColumn = (nodeId: string, depth: number, indentOffset: number): number => {
     const node = doc.nodes.get(nodeId);
     if (!node) return 0;
-    const size = measurer.measure(node, depth, numberingLabels?.get(nodeId));
+    const size = measurer.measure(
+      node,
+      depth,
+      numberingLabels?.get(nodeId),
+      thumbnailNodeIds?.has(nodeId) ?? false,
+    );
     sizes.set(nodeId, size);
 
     let maxWidth = indentOffset + size.width;
@@ -310,7 +326,12 @@ function computeOrgChartLayout(
     return maxWidth;
   };
 
-  const rootSize = measurer.measure(root, 0, numberingLabels?.get(root.id));
+  const rootSize = measurer.measure(
+    root,
+    0,
+    numberingLabels?.get(root.id),
+    thumbnailNodeIds?.has(root.id) ?? false,
+  );
   sizes.set(root.id, rootSize);
 
   const visibleMainBranches = visibleChildrenOf(root.id);
@@ -439,6 +460,7 @@ export function computeLayout(
   const layoutMode: MapLayoutMode = options?.layoutMode ?? 'balanced';
   const edgeStyle: BranchEdgeStyle = options?.edgeStyle ?? 'tapered';
   const numberingLabels = options?.numberingLabels;
+  const thumbnailNodeIds = options?.thumbnailNodeIds;
 
   const visibleChildrenOf = (nodeId: string): readonly string[] => {
     const node = doc.nodes.get(nodeId);
@@ -455,6 +477,7 @@ export function computeLayout(
       spacing,
       edgeStyle,
       numberingLabels,
+      thumbnailNodeIds,
     );
   }
 
@@ -470,7 +493,12 @@ export function computeLayout(
     depths.set(nodeId, depth);
     colorIndices.set(nodeId, branchColorIndex);
 
-    const size = measurer.measure(node, depth, numberingLabels?.get(nodeId));
+    const size = measurer.measure(
+      node,
+      depth,
+      numberingLabels?.get(nodeId),
+      thumbnailNodeIds?.has(nodeId) ?? false,
+    );
     sizes.set(nodeId, size);
 
     const children = visibleChildrenOf(nodeId);
@@ -492,7 +520,12 @@ export function computeLayout(
     return totalHeight;
   };
 
-  const rootSize = measurer.measure(root, 0, numberingLabels?.get(root.id));
+  const rootSize = measurer.measure(
+    root,
+    0,
+    numberingLabels?.get(root.id),
+    thumbnailNodeIds?.has(root.id) ?? false,
+  );
   sizes.set(root.id, rootSize);
   depths.set(root.id, 0);
   colorIndices.set(root.id, 0);

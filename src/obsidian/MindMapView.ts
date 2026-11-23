@@ -643,6 +643,7 @@ export class MindMapView extends FileView {
 
     const activePath = this.file?.path ?? '';
     const draftStore = this.plugin.getDraftStore();
+    const metadataProvider = this.plugin.getMetadataProvider();
     const fileDrafts = activePath.length > 0 ? draftStore.listDraftsForFile(activePath) : [];
 
     const backEntry = this.navHistory.peekBack();
@@ -685,6 +686,8 @@ export class MindMapView extends FileView {
         drafts: fileDrafts,
         unpersistedDraftIds: draftStore.getUnpersistedDraftIds(),
         draftRevisions: draftStore.getDraftRevisions(),
+        metadataProvider,
+        metadataVersion: metadataProvider.getVersion(),
         onSaveDraft: (input: SaveDraftInput) => draftStore.saveDraft(input),
         onIsLatestDraftRevision: (draftId: string, expectedRevision: number) =>
           draftStore.isLatestDraftRevision(draftId, expectedRevision),

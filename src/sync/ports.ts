@@ -39,13 +39,16 @@ export interface ObsidianHostPort {
 }
 
 /**
- * Reserved read-only port for Phase 2 (M4) Obsidian metadataCache features
+ * Read-only port for Phase 2 (M4) Obsidian metadataCache features
  * (backlinks, image embeds, freshness tracking).
  */
 export interface NodeMetadataProvider {
   getFreshness(filePath: string, contentHash: string): 'fresh' | 'updating';
   getResolvedImageSrc(sourcePath: string, embedText: string): string | null;
-  getBacklinks(filePath: string, headingOrBlockId?: string): readonly BacklinkItem[];
+  getBacklinks(
+    filePath: string,
+    headingOrBlockId?: string | readonly string[],
+  ): readonly BacklinkItem[];
 }
 
 export interface CommandDispatchOutcome {

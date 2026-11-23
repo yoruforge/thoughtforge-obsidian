@@ -33,6 +33,7 @@ import {
   computeSubtreeBounds,
   computeTopicNumbering,
 } from '../core/view/topicPresentation';
+import { extractNodeImageEmbeds } from '../core/view/imageEmbeds';
 import {
   collectAncestorIds,
   resolveTopicAtLine,
@@ -49,7 +50,12 @@ import {
   type SaveDraftInput,
   type SaveDraftResult,
 } from '../sync/DraftStore';
-import type { CommandDispatchOutcome } from '../sync/ports';
+import type {
+  BacklinkItem,
+  CommandDispatchOutcome,
+  NodeMetadataProvider,
+} from '../sync/ports';
+import type { NodeThumbnailInfo } from './DomNodeLayer';
 import {
   buildCommitRenameCommand,
   buildPatchGuard,
@@ -63,7 +69,11 @@ import {
 } from './editSession';
 import type { GuardableKeyEvent } from './imeGuard';
 import { shouldIgnoreCanvasKeyEvent } from './keyboardGuard';
-import { NodePopover, type NoteCommitOutcome } from './NodePopover';
+import {
+  NodePopover,
+  type NoteCommitOutcome,
+  type PopoverImageItem,
+} from './NodePopover';
 import { QuickStylePopover } from './QuickStylePopover';
 import { StatusBar } from './StatusBar';
 import { Toolbar } from './Toolbar';
@@ -112,6 +122,8 @@ export interface MindMapAppProps {
   readonly drafts?: readonly DraftEntry[];
   readonly unpersistedDraftIds?: ReadonlySet<string>;
   readonly draftRevisions?: ReadonlyMap<string, number>;
+  readonly metadataProvider?: NodeMetadataProvider;
+  readonly metadataVersion?: number;
   readonly onSaveDraft?: (input: SaveDraftInput) => Promise<SaveDraftResult>;
   readonly onIsLatestDraftRevision?: (draftId: string, expectedRevision: number) => boolean;
   readonly onGetDraftRevision?: (draftId: string) => number | undefined;
@@ -180,6 +192,8 @@ export function MindMapApp({
   drafts = [],
   unpersistedDraftIds,
   draftRevisions,
+  metadataProvider,
+  metadataVersion = 0,
   onSaveDraft,
   onIsLatestDraftRevision,
   onGetDraftRevision,
@@ -465,6 +479,80 @@ export function MindMapApp({
     [doc, settings.topicNumbering],
   );
 
+  // Resolve first safe vault image thumbnail per node (read-only via NodeMetadataProvider)
+  const nodeThumbnails = useMemo(() => {
+    const map = new Map<string, NodeThumbnailInfo>();
+    if (!doc || !metadataProvider || filePath.length === 0 || metadataVersion < 0) {
+      return map;
+    }
+    for (const node of doc.nodes.values()) {
+      const embeds = extractNodeImageEmbeds(node);
+      for (const embed of embeds) {
+        const resolvedSrc = metadataProvider.getResolvedImageSrc(filePath, embed.target);
+        if (resolvedSrc !== null) {
+          map.set(node.id, { src: resolvedSrc, alt: embed.alt });
+          break;
+        }
+      }
+    }
+    return map;
+  }, [doc, filePath, metadataProvider, metadataVersion]);
+
+  const thumbnailNodeIds = useMemo(() => new Set(nodeThumbnails.keys()), [nodeThumbnails]);
+
+  const selectedNodeForMeta =
+    doc && effectiveSelectedId !== null ? (doc.nodes.get(effectiveSelectedId) ?? null) : null;
+
+  const selectedNodeImages = useMemo<readonly PopoverImageItem[]>(() => {
+    if (
+      !popoverOpen ||
+      !selectedNodeForMeta ||
+      !metadataProvider ||
+      filePath.length === 0 ||
+      metadataVersion < 0
+    ) {
+      return [];
+    }
+    const items: PopoverImageItem[] = [];
+    for (const embed of extractNodeImageEmbeds(selectedNodeForMeta)) {
+      const src = metadataProvider.getResolvedImageSrc(filePath, embed.target);
+      if (src !== null) {
+        items.push({ target: embed.target, src, alt: embed.alt });
+      }
+      if (items.length >= 6) break;
+    }
+    return items;
+  }, [popoverOpen, selectedNodeForMeta, metadataProvider, filePath, metadataVersion]);
+
+  const selectedNodeBacklinks = useMemo<readonly BacklinkItem[] | undefined>(() => {
+    if (!popoverOpen || !doc || !metadataProvider || filePath.length === 0 || metadataVersion < 0) {
+      return undefined;
+    }
+    const anchors: string[] = [];
+    if (selectedNodeForMeta && selectedNodeForMeta.kind !== 'central-virtual') {
+      if (selectedNodeForMeta.preservedBlockId !== null) {
+        anchors.push(selectedNodeForMeta.preservedBlockId);
+      }
+      if (selectedNodeForMeta.displayTitle.length > 0) {
+        anchors.push(selectedNodeForMeta.displayTitle);
+      }
+      if (
+        selectedNodeForMeta.titleRaw.length > 0 &&
+        selectedNodeForMeta.titleRaw !== selectedNodeForMeta.displayTitle
+      ) {
+        anchors.push(selectedNodeForMeta.titleRaw);
+      }
+    }
+    return metadataProvider.getBacklinks(filePath, anchors.length > 0 ? anchors : undefined);
+  }, [popoverOpen, doc, selectedNodeForMeta, metadataProvider, filePath, metadataVersion]);
+
+  const metadataFreshness = useMemo<'fresh' | 'updating' | undefined>(() => {
+    if (!popoverOpen || !doc || !metadataProvider || filePath.length === 0 || metadataVersion < 0) {
+      return undefined;
+    }
+    return metadataProvider.getFreshness(filePath, doc.contentHash);
+  }, [popoverOpen, doc, metadataProvider, filePath, metadataVersion]);
+
   const visibility = useMemo(() => {
     if (!doc) return null;
     return computeVisibilityAndEmphasis(doc, {
@@ -491,8 +579,9 @@ export function MindMapApp({
       layoutMode: settings.layoutMode,
       edgeStyle: settings.edgeStyle,
       numberingLabels,
+      thumbnailNodeIds,
     });
-  }, [doc, visibility, settings.layoutMode, settings.edgeStyle, numberingLabels]);
+  }, [doc, visibility, settings.layoutMode, settings.edgeStyle, numberingLabels, thumbnailNodeIds]);
 
   const layoutRef = useRef(layout);
   layoutRef.current = layout;
@@ -2019,6 +2108,7 @@ export function MindMapApp({
           matchedNodeIds={visibility.matchedNodeIds}
           effectiveCollapsedIds={visibility.effectiveCollapsedIds}
           numberingLabels={numberingLabels}
+          nodeThumbnails={nodeThumbnails}
           palette={palette}
           rainbowBranches={settings.rainbowBranches}
           colorStyle={settings.colorStyle}
@@ -2084,6 +2174,9 @@ export function MindMapApp({
             onCopyDraftText={handleCopyDraftText}
             activeTagFilter={structuredFilter.tag}
             onToggleTagFilter={handleToggleTagFilter}
+            nodeImages={selectedNodeImages}
+            backlinks={selectedNodeBacklinks}
+            metadataFreshness={metadataFreshness}
             onClose={handleClosePopover}
             onJumpToSource={(line) => onOpenMarkdown(line)}
             onOpenLink={onOpenLink}

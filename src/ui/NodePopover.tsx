@@ -9,10 +9,16 @@ import {
 import type { DraftEntry, MindMapDocument, TopicLink, TopicNode } from '../core/model';
 import { extractTopicTags } from '../core/view/topicPresentation';
 import type { Messages } from '../i18n';
-import type { CommandDispatchOutcome } from '../sync/ports';
+import type { BacklinkItem, CommandDispatchOutcome } from '../sync/ports';
 import { createNoteEditingSession, type NoteEditingSession } from './editSession';
 import { ImeGuard, type GuardableKeyEvent } from './imeGuard';
 import { shouldHandlePopoverDocumentEscape } from './keyboardGuard';
+
+export interface PopoverImageItem {
+  readonly target: string;
+  readonly src: string;
+  readonly alt: string;
+}
 
 export interface NoteCommitOutcome extends CommandDispatchOutcome {
   readonly rescuedDraftId?: string;
@@ -50,6 +56,9 @@ export interface NodePopoverProps {
   readonly onCopyDraftText?: (draftText: string) => void;
   readonly activeTagFilter?: string;
   readonly onToggleTagFilter?: (tag: string) => void;
+  readonly nodeImages?: readonly PopoverImageItem[];
+  readonly backlinks?: readonly BacklinkItem[];
+  readonly metadataFreshness?: 'fresh' | 'updating';
   readonly onClose: () => void;
   readonly onJumpToSource: (line: number) => void;
   readonly onOpenLink: (link: TopicLink, newTab: boolean) => void;
@@ -78,6 +87,9 @@ export function NodePopover({
   onCopyDraftText,
   activeTagFilter,
   onToggleTagFilter,
+  nodeImages = [],
+  backlinks,
+  metadataFreshness,
   onClose,
   onJumpToSource,
   onOpenLink,
@@ -632,6 +644,69 @@ export function NodePopover({
             </div>
           );
         })()}
+
+      {nodeImages.length > 0 && (
+        <div className="ito-popover-section">
+          <div className="ito-popover-section-title">{messages.popover.imagesHeading}</div>
+          <div className="ito-popover-images">
+            {nodeImages.map((img) => (
+              <figure key={img.target} className="ito-popover-image-card">
+                <img
+                  className="ito-popover-image"
+                  src={img.src}
+                  alt={img.alt}
+                  loading="lazy"
+                />
+                <figcaption className="ito-popover-image-caption">{img.alt}</figcaption>
+              </figure>
+            ))}
+          </div>
+        </div>
+      )}
+
+      {backlinks !== undefined && (
+        <div className="ito-popover-section ito-backlinks-card">
+          <div className="ito-popover-section-header">
+            <div className="ito-popover-section-title">
+              {messages.popover.backlinksHeading} ({backlinks.length})
+            </div>
+            {metadataFreshness === 'updating' && (
+              <span className="ito-backlinks-updating">{messages.popover.backlinksUpdating}</span>
+            )}
+          </div>
+          {backlinks.length > 0 ? (
+            <ul className="ito-popover-list ito-backlinks-list">
+              {backlinks.map((item) => (
+                <li key={item.sourcePath}>
+                  <button
+                    type="button"
+                    className="ito-link-button ito-backlink-item"
+                    disabled={isSaving}
+                    title={item.sourcePath}
+                    onClick={(event) => {
+                      if (!isSavingRef.current) {
+                        onOpenLink(
+                          { kind: 'wikilink', target: item.sourcePath, label: item.sourceTitle },
+                          event.metaKey || event.ctrlKey,
+                        );
+                      }
+                    }}
+                  >
+                    <span className="ito-backlink-title">{item.sourceTitle}</span>
+                    {item.targetsSpecificAnchor && (
+                      <span className="ito-backlink-direct-badge">
+                        {messages.popover.backlinksDirectBadge}
+                      </span>
+                    )}
+                  </button>
+                </li>
+              ))}
+            </ul>
+          ) : (
+            <p className="ito-popover-empty">{messages.popover.backlinksEmpty}</p>
+          )}
+        </div>
+      )}
 
       {node.unmappedBlocks.length > 0 && (
         <div className="ito-popover-section">
