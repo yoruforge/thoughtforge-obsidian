@@ -5,10 +5,9 @@ export function utf8ByteLength(text: string): number {
 }
 
 /**
- * Deterministic 64-bit hex digest (dual-seed FNV-1a 32-bit) for fast synchronous
- * content/range identity checks without external crypto dependencies.
+ * Deterministic 64-bit hex digest (dual-seed FNV-1a 32-bit) kept synchronous by design for
+ * pure-core Markdown parse/patch CAS checks without async crypto or external dependencies.
  */
-// TODO: [M2 CAS 強化] - 書き込み照合で衝突耐性をさらに高める場合は Web Crypto SHA-256 を併用する
 export function hashText(text: string): string {
   let h1 = 0x811c9dc5;
   let h2 = 0x9e3779b1;

@@ -13,6 +13,7 @@ import type {
   DraftEntry,
   FocusMode,
   LayoutBounds,
+  MindMapDocument,
   ParseResult,
   PluginSettings,
   StructuredFilterCriteria,
@@ -32,6 +33,11 @@ import {
   computeSubtreeBounds,
   computeTopicNumbering,
 } from '../core/view/topicPresentation';
+import {
+  remapFocusMode,
+  remapNodeIdAcrossDocuments,
+  remapNodeIdSet,
+} from '../core/view/viewStateRemap';
 import type { Messages } from '../i18n';
 import {
   resolveDraftTarget,
@@ -100,7 +106,10 @@ export interface MindMapAppProps {
   readonly onOpenMarkdown: (line?: number) => void;
   readonly onOpenLink: (link: TopicLink, newTab: boolean) => void;
   readonly onUpdateSettings?: (patch: Partial<PluginSettings>) => void;
-  readonly onDispatchCommand?: (command: SemanticCommand) => Promise<CommandDispatchOutcome>;
+  readonly onDispatchCommand?: (
+    command: SemanticCommand,
+    expectedFilePath?: string,
+  ) => Promise<CommandDispatchOutcome>;
   readonly onUndo?: () => Promise<CommandDispatchOutcome>;
   readonly onRedo?: () => Promise<CommandDispatchOutcome>;
   readonly onRegisterActionTriggers?: (triggers: MindMapActionTriggers | null) => void;
@@ -176,10 +185,58 @@ export function MindMapApp({
   const inlineSplitTriggerRef = useRef<((event: GuardableKeyEvent) => boolean) | null>(null);
   const noteCommitTriggerRef = useRef<((event: GuardableKeyEvent) => boolean) | null>(null);
   const isCommandInFlightRef = useRef(false);
+  const prevDocStateRef = useRef<{ readonly filePath: string; readonly doc: MindMapDocument } | null>(
+    doc ? { filePath, doc } : null,
+  );
+
+  const syncViewStateForNextDoc = useCallback(
+    (
+      nextFilePath: string,
+      nextDoc: MindMapDocument,
+      expandNodeId?: string,
+      expandBeforeNodeId?: string,
+    ): void => {
+      const prev = prevDocStateRef.current;
+      prevDocStateRef.current = { filePath: nextFilePath, doc: nextDoc };
+
+      if (prev !== null && prev.filePath === nextFilePath && prev.doc !== nextDoc) {
+        const resolvedExpandId =
+          expandNodeId ??
+          (expandBeforeNodeId !== undefined
+            ? (remapNodeIdAcrossDocuments(prev.doc, nextDoc, expandBeforeNodeId) ?? undefined)
+            : undefined);
+
+        setBaseCollapsedIds((prevIds) => {
+          const remapped = remapNodeIdSet(prev.doc, nextDoc, prevIds);
+          if (resolvedExpandId !== undefined && remapped.has(resolvedExpandId)) {
+            const next = new Set(remapped);
+            next.delete(resolvedExpandId);
+            return next;
+          }
+          return remapped;
+        });
+        setUserOpenedDuringFilterIds((prevIds) => remapNodeIdSet(prev.doc, nextDoc, prevIds));
+        setFocusMode((prevMode) => remapFocusMode(prev.doc, nextDoc, prevMode));
+        return;
+      }
+
+      const fallbackExpandId = expandNodeId ?? expandBeforeNodeId;
+      if (fallbackExpandId !== undefined) {
+        setBaseCollapsedIds((prevIds) => {
+          if (!prevIds.has(fallbackExpandId)) return prevIds;
+          const next = new Set(prevIds);
+          next.delete(fallbackExpandId);
+          return next;
+        });
+      }
+    },
+    [],
+  );
 
   // Reset per-note view state when switching to a different Markdown file
   useEffect(() => {
     hasInitialFitRef.current = false;
+    prevDocStateRef.current = docRef.current ? { filePath, doc: docRef.current } : null;
     setBaseCollapsedIds(new Set());
     setUserOpenedDuringFilterIds(new Set());
     setFocusMode({ kind: 'off' });
@@ -190,6 +247,12 @@ export function MindMapApp({
     setEditingSession(null);
     setSelectedId(null);
   }, [filePath]);
+
+  // Remap node-keyed view state (collapse/fixed focus) when the same note reloads externally
+  useEffect(() => {
+    if (!doc) return;
+    syncViewStateForNextDoc(filePath, doc);
+  }, [filePath, doc, syncViewStateForNextDoc]);
 
   // Keep selection valid when the underlying document reloads
   const effectiveSelectedId = useMemo(() => {
@@ -433,6 +496,7 @@ export function MindMapApp({
       command: SemanticCommand,
       openInlineEditorAfter: boolean,
       expandParentId?: string,
+      expandFocusedParent = false,
     ): Promise<CommandDispatchOutcome> => {
       if (!onDispatchCommand) {
         return { accepted: false, rejectCode: 'unsupported-command' };
@@ -445,12 +509,22 @@ export function MindMapApp({
       const startedFilePath = filePathRef.current;
       isCommandInFlightRef.current = true;
       try {
-        const outcome = await onDispatchCommand(command);
+        const outcome = await onDispatchCommand(command, startedFilePath);
         if (filePathRef.current !== startedFilePath) {
           return outcome;
         }
         if (outcome.accepted && outcome.focusNodeId !== undefined) {
-          if (expandParentId !== undefined) {
+          if (outcome.nextDocument !== undefined) {
+            const actualFocusedParentId = expandFocusedParent
+              ? (outcome.nextDocument.nodes.get(outcome.focusNodeId)?.parentId ?? undefined)
+              : undefined;
+            syncViewStateForNextDoc(
+              startedFilePath,
+              outcome.nextDocument,
+              actualFocusedParentId,
+              expandParentId,
+            );
+          } else if (expandParentId !== undefined) {
             setBaseCollapsedIds((prev) => {
               if (!prev.has(expandParentId)) return prev;
               const next = new Set(prev);
@@ -480,7 +554,7 @@ export function MindMapApp({
         isCommandInFlightRef.current = false;
       }
     },
-    [onDispatchCommand],
+    [onDispatchCommand, syncViewStateForNextDoc],
   );
 
   const runHistoryStep = useCallback(
@@ -495,6 +569,9 @@ export function MindMapApp({
           return;
         }
         if (outcome.accepted && outcome.focusNodeId !== undefined) {
+          if (outcome.nextDocument !== undefined) {
+            syncViewStateForNextDoc(startedFilePath, outcome.nextDocument);
+          }
           setEditingSession(null);
           setSelectedId(outcome.focusNodeId);
           rootRef.current?.focus({ preventScroll: true });
@@ -503,7 +580,7 @@ export function MindMapApp({
         isCommandInFlightRef.current = false;
       }
     },
-    [onUndo, onRedo],
+    [onUndo, onRedo, syncViewStateForNextDoc],
   );
 
   const handleStartEdit = useCallback(
@@ -772,6 +849,7 @@ export function MindMapApp({
         },
         false,
         targetParentId,
+        true,
       );
     },
     [doc, onDispatchCommand, dispatchAndFocus],
@@ -784,8 +862,9 @@ export function MindMapApp({
       onNotify?.(messages.edit.cannotModifyRoot);
       return;
     }
+    const originFilePath = filePathRef.current;
     const copied = await onCopyBranchSubtree(node);
-    if (copied) {
+    if (copied && filePathRef.current === originFilePath) {
       onNotify?.(messages.edit.branchCopiedNotice);
     }
   }, [doc, effectiveSelectedId, onCopyBranchSubtree, onNotify, messages]);
@@ -797,8 +876,14 @@ export function MindMapApp({
       onNotify?.(messages.edit.cannotModifyRoot);
       return;
     }
+    const originFilePath = filePathRef.current;
+    const originDocHash = doc.contentHash;
     const copied = await onCopyBranchSubtree(node);
     if (!copied) return;
+    // Recheck active file & document snapshot after awaiting the OS clipboard (PR #6 P1).
+    if (filePathRef.current !== originFilePath || docRef.current?.contentHash !== originDocHash) {
+      return;
+    }
     const outcome = await dispatchAndFocus(
       {
         type: 'deleteBranch',
@@ -806,7 +891,7 @@ export function MindMapApp({
       },
       false,
     );
-    if (outcome.accepted) {
+    if (outcome.accepted && filePathRef.current === originFilePath) {
       onNotify?.(messages.edit.branchCutNotice);
     }
   }, [doc, effectiveSelectedId, onCopyBranchSubtree, onDispatchCommand, dispatchAndFocus, onNotify, messages]);
@@ -815,7 +900,13 @@ export function MindMapApp({
     if (!doc || effectiveSelectedId === null || !onReadBranchClipboard || !onDispatchCommand) return;
     const node = doc.nodes.get(effectiveSelectedId);
     if (!node) return;
+    const originFilePath = filePathRef.current;
+    const originDocHash = doc.contentHash;
     const subtreeMarkdown = await onReadBranchClipboard();
+    // Recheck active file & document snapshot after awaiting the OS clipboard (PR #6 P1).
+    if (filePathRef.current !== originFilePath || docRef.current?.contentHash !== originDocHash) {
+      return;
+    }
     if (!subtreeMarkdown || subtreeMarkdown.trim().length === 0) {
       onNotify?.(messages.edit.clipboardEmptyNotice);
       return;
@@ -828,6 +919,7 @@ export function MindMapApp({
       },
       false,
       node.id,
+      true,
     );
   }, [doc, effectiveSelectedId, onReadBranchClipboard, onDispatchCommand, dispatchAndFocus, onNotify, messages]);
 
@@ -1159,6 +1251,8 @@ export function MindMapApp({
               guard: buildPatchGuard(doc, targetNode),
             },
             false,
+            undefined,
+            commandType === 'indent',
           );
           return;
         }
@@ -1240,6 +1334,7 @@ export function MindMapApp({
             },
             true,
             targetNode.id,
+            true,
           );
         }
         return;

@@ -957,4 +957,44 @@ describe('M2-c updateNote, reparent (D&D), and pasteBranch (copy/paste)', () => 
     expect(pastedBad.ok).toBe(false);
     if (!pastedBad.ok) expect(pastedBad.reason).toBe('invalid-note-block-syntax');
   });
+
+  it('rejects moveSibling when swapping unevenly indented list siblings would reparent an adjacent subtree', () => {
+    const md = '# Root\n- P\n      - A\n  - B\n    - C\n';
+    const doc = parseOk(md);
+    const nodeB = findNode(doc, 'B');
+    const res = planAndValidatePatch(md, doc, 'Test', {
+      type: 'moveSibling',
+      guard: guardFor(doc, nodeB),
+      direction: 'up',
+    });
+    expect(res.ok).toBe(false);
+    if (!res.ok) {
+      expect(res.reason).toBe('invariant-check-failed');
+    }
+  });
+
+  it('allows deleting the final child in a CRLF document when no line endings remain', () => {
+    const crlfMd = '# Root\r\n- A';
+    const doc = parseOk(crlfMd);
+    expect(doc.lineEnding).toBe('\r\n');
+    const nodeA = findNode(doc, 'A');
+
+    const delBranch = planAndValidatePatch(crlfMd, doc, 'Test', {
+      type: 'deleteBranch',
+      guard: guardFor(doc, nodeA),
+    });
+    expect(delBranch.ok).toBe(true);
+    if (delBranch.ok) {
+      expect(delBranch.nextRawText).toBe('# Root');
+    }
+
+    const delKeep = planAndValidatePatch(crlfMd, doc, 'Test', {
+      type: 'deleteNodeKeepChildren',
+      guard: guardFor(doc, nodeA),
+    });
+    expect(delKeep.ok).toBe(true);
+    if (delKeep.ok) {
+      expect(delKeep.nextRawText).toBe('# Root');
+    }
+  });
 });

@@ -178,7 +178,8 @@ export function validatePatchedDocument(
       `Patched document became read-only (${afterDoc.readOnlyReasons.join(', ')}).`,
     );
   }
-  if (afterDoc.lineEnding !== beforeDoc.lineEnding) {
+  const afterHasLineEnding = afterRawText.includes('\n') || afterRawText.includes('\r');
+  if (afterHasLineEnding && afterDoc.lineEnding !== beforeDoc.lineEnding) {
     return fail(
       'invariant-check-failed',
       'Dry-run verification detected an unintended line ending change.',
@@ -351,11 +352,52 @@ export function validatePatchedDocument(
       beforeTarget.parentId !== null ? beforeDoc.nodes.get(beforeTarget.parentId) : undefined;
     const afterParent =
       focusedNode.parentId !== null ? afterDoc.nodes.get(focusedNode.parentId) : undefined;
-    if (!parentMatchesReference(afterDoc, afterParent, beforeParent)) {
+    if (
+      !parentMatchesReference(afterDoc, afterParent, beforeParent) ||
+      !beforeParent ||
+      !afterParent
+    ) {
       return fail('invariant-check-failed', 'Moved sibling changed parent unexpectedly.');
     }
     if (focusedNode.childIds.length !== beforeTarget.childIds.length) {
       return fail('invariant-check-failed', 'Moved sibling lost or gained children unexpectedly.');
+    }
+    if (afterParent.childIds.length !== beforeParent.childIds.length) {
+      return fail(
+        'invariant-check-failed',
+        'moveSibling altered parent child count (an adjacent sibling may have been reparented).',
+      );
+    }
+    const beforeIdx = beforeParent.childIds.indexOf(beforeTarget.id);
+    const swapIdx = command.direction === 'up' ? beforeIdx - 1 : beforeIdx + 1;
+    if (beforeIdx < 0 || swapIdx < 0 || swapIdx >= beforeParent.childIds.length) {
+      return fail('invariant-check-failed', 'moveSibling indices out of bounds during validation.');
+    }
+    const expectedBeforeIds = [...beforeParent.childIds];
+    const movedBeforeId = expectedBeforeIds[beforeIdx];
+    const partnerBeforeId = expectedBeforeIds[swapIdx];
+    if (movedBeforeId === undefined || partnerBeforeId === undefined) {
+      return fail('invariant-check-failed', 'moveSibling partner lookup failed.');
+    }
+    expectedBeforeIds[beforeIdx] = partnerBeforeId;
+    expectedBeforeIds[swapIdx] = movedBeforeId;
+
+    for (let i = 0; i < expectedBeforeIds.length; i += 1) {
+      const expectedBeforeNode = beforeDoc.nodes.get(expectedBeforeIds[i] ?? '');
+      const actualAfterNode = afterDoc.nodes.get(afterParent.childIds[i] ?? '');
+      if (
+        !expectedBeforeNode ||
+        !actualAfterNode ||
+        actualAfterNode.titleRaw !== expectedBeforeNode.titleRaw ||
+        actualAfterNode.childIds.length !== expectedBeforeNode.childIds.length ||
+        collectSubtreeNodeIds(afterDoc, actualAfterNode.id).size !==
+          collectSubtreeNodeIds(beforeDoc, expectedBeforeNode.id).size
+      ) {
+        return fail(
+          'invariant-check-failed',
+          'moveSibling altered an adjacent sibling subtree hierarchy.',
+        );
+      }
     }
     return { ok: true, nextDocument: afterDoc, focusNodeId: focusedNode.id };
   }

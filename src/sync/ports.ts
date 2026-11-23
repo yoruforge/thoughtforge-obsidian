@@ -60,5 +60,3 @@ export interface CommandDispatchOutcome {
 export interface CommandDispatcher {
   dispatch(command: SemanticCommand): Promise<CommandDispatchOutcome>;
 }
-
-// TODO: [M2-c/M3 DraftStore] - data.json への下書き退避・回復（field:'title'|'note'）を FileCoordinator / MindMapView に接続する

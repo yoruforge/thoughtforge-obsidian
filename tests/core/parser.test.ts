@@ -209,4 +209,40 @@ describe('parseMarkdownToMap', () => {
     expect(parentOf('g')).toBe('R');
     expect(parentOf('h')).toBe('g');
   });
+
+  it('terminates HTML comments and declarations at their closing delimiter without swallowing headings', () => {
+    const singleLine = '# Root\n<!-- comment -->\n## Branch\n- Child\n';
+    const r1 = parseMarkdownToMap(singleLine, 'Root');
+    expect(r1.status).toBe('ok');
+    if (r1.status !== 'ok') return;
+    const titles1 = [...r1.document.nodes.values()].map((n) => n.titleRaw);
+    expect(titles1).toEqual(['Root', 'Branch', 'Child']);
+
+    const multiLine = '# Root\n<!--\n  line 1\n  line 2\n-->\n## Branch\n- Child\n';
+    const r2 = parseMarkdownToMap(multiLine, 'Root');
+    expect(r2.status).toBe('ok');
+    if (r2.status !== 'ok') return;
+    const titles2 = [...r2.document.nodes.values()].map((n) => n.titleRaw);
+    expect(titles2).toEqual(['Root', 'Branch', 'Child']);
+  });
+
+  it('resolves dedented paragraph ownership back to the outer list item after a nested child', () => {
+    const md = '# Root\n- Parent\n  - Child\n\n  Parent details\n';
+    const res = parseMarkdownToMap(md, 'Root');
+    expect(res.status).toBe('ok');
+    if (res.status !== 'ok') return;
+    const parent = [...res.document.nodes.values()].find((n) => n.titleRaw === 'Parent');
+    const child = [...res.document.nodes.values()].find((n) => n.titleRaw === 'Child');
+    expect(parent).toBeDefined();
+    expect(child).toBeDefined();
+    if (!parent || !child) return;
+
+    // Child MUST NOT absorb "Parent details" as its note or subtree range
+    expect(child.noteText).toBeNull();
+    expect(child.subtreeRange).toEqual({ startLine: 2, endLine: 3 });
+    // Parent owns "Parent details" as a preserved trailing unmapped block
+    expect(parent.unmappedBlocks.some((b) => b.range.startLine === 4 && b.range.endLine === 5)).toBe(
+      true,
+    );
+  });
 });
