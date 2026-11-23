@@ -8,6 +8,7 @@ export interface StatusBarProps {
   readonly zoomPercent: number;
   readonly focusMode: FocusMode;
   readonly stylesOpen: boolean;
+  readonly draftCount?: number;
   readonly messages: Messages;
   readonly canEdit: boolean;
   readonly filterActive: boolean;
@@ -15,6 +16,7 @@ export interface StatusBarProps {
   readonly onZoomReset: () => void;
   readonly onCycleFocus: () => void;
   readonly onToggleStyles: () => void;
+  readonly onInspectDrafts?: () => void;
 }
 
 export function StatusBar({
@@ -23,6 +25,7 @@ export function StatusBar({
   zoomPercent,
   focusMode,
   stylesOpen,
+  draftCount = 0,
   messages,
   canEdit,
   filterActive,
@@ -30,6 +33,7 @@ export function StatusBar({
   onZoomReset,
   onCycleFocus,
   onToggleStyles,
+  onInspectDrafts,
 }: StatusBarProps) {
   const hasReadOnlyReasons = document.readOnlyReasons.length > 0;
   const reasonSummary = document.readOnlyReasons
@@ -79,6 +83,19 @@ export function StatusBar({
       </div>
 
       <div className="ito-statusbar-right">
+        {draftCount > 0 && onInspectDrafts && (
+          <button
+            type="button"
+            className="ito-status-btn ito-status-draft-btn"
+            title={messages.status.draftsBadgeTooltip}
+            onClick={(event) => {
+              event.stopPropagation();
+              onInspectDrafts();
+            }}
+          >
+            {messages.status.draftsBadge}: {draftCount}
+          </button>
+        )}
         <button
           type="button"
           className={`ito-status-btn ito-status-focus-btn ${focusMode.kind !== 'off' ? 'ito-status-btn-active' : ''}`}

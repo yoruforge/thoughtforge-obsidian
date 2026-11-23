@@ -6,7 +6,7 @@ export interface InlineEditorProps {
   readonly imeGuardWindowMs: number;
   readonly ariaLabel: string;
   readonly onCommit: (nextValue: string) => void;
-  readonly onSplit?: (leftValue: string, rightValue: string) => void;
+  readonly onSplit?: (leftValue: string, rightValue: string, fullValue: string) => void;
   readonly splitTriggerRef?: MutableRefObject<((event: GuardableKeyEvent) => boolean) | null>;
   readonly onCancel: () => void;
   /** Called on unmount when the editor closed without commit/cancel and the text was changed. */
@@ -59,11 +59,11 @@ export function InlineEditor({
     onCommit(nextValue);
   };
 
-  const splitValue = (leftValue: string, rightValue: string): void => {
+  const splitValue = (leftValue: string, rightValue: string, fullValue: string): void => {
     if (settledRef.current || !onSplit) return;
     settledRef.current = true;
     imeGuardRef.current.reset();
-    onSplit(leftValue, rightValue);
+    onSplit(leftValue, rightValue, fullValue);
   };
 
   const cancelEdit = (): void => {
@@ -96,7 +96,7 @@ export function InlineEditor({
     const left = currentVal.slice(0, start).trim();
     const right = currentVal.slice(end).trim();
     if (left.length > 0 && right.length > 0 && onSplit) {
-      splitValue(left, right);
+      splitValue(left, right, currentVal);
       return true;
     }
     if (left.length > 0 && right.length === 0) {

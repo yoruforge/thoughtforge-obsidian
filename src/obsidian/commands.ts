@@ -80,5 +80,55 @@ export function registerPluginCommands(plugin: ThoughtForgePlugin): void {
     },
   });
 
-  // TODO: [M2-c コマンド登録] - 残りの編集操作（トピックノート直接編集・枝コピペ等）を既定ホットキーなしでコマンドパレットへ登録する
+  plugin.addCommand({
+    id: 'edit-topic-note',
+    name: plugin.messages.commands.editTopicNote,
+    checkCallback: (checking) => {
+      const activeView = plugin.app.workspace.getActiveViewOfType(MindMapView);
+      if (!activeView) return false;
+      if (!checking) {
+        void activeView.triggerEditSelectedNote();
+      }
+      return true;
+    },
+  });
+
+  plugin.addCommand({
+    id: 'copy-branch',
+    name: plugin.messages.commands.copyBranch,
+    checkCallback: (checking) => {
+      const activeView = plugin.app.workspace.getActiveViewOfType(MindMapView);
+      if (!activeView) return false;
+      if (!checking) {
+        void activeView.triggerCopySelectedBranch();
+      }
+      return true;
+    },
+  });
+
+  plugin.addCommand({
+    id: 'cut-branch',
+    name: plugin.messages.commands.cutBranch,
+    checkCallback: (checking) => {
+      const activeView = plugin.app.workspace.getActiveViewOfType(MindMapView);
+      if (!activeView) return false;
+      if (!checking) {
+        void activeView.triggerCutSelectedBranch();
+      }
+      return true;
+    },
+  });
+
+  plugin.addCommand({
+    id: 'paste-branch',
+    name: plugin.messages.commands.pasteBranch,
+    checkCallback: (checking) => {
+      const activeView = plugin.app.workspace.getActiveViewOfType(MindMapView);
+      if (!activeView) return false;
+      if (!checking) {
+        void activeView.triggerPasteBranch();
+      }
+      return true;
+    },
+  });
 }

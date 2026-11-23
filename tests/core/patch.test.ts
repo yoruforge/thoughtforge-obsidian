@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import type { MindMapDocument, TopicNode } from '../../src/core/model';
 import { parseMarkdownToMap } from '../../src/core/parser';
-import { planAndValidatePatch } from '../../src/core/patch';
+import { extractSubtreeMarkdown, planAndValidatePatch } from '../../src/core/patch';
 import type { PatchGuard } from '../../src/core/patch/commands';
 
 function parseOk(md: string, fallback = 'TestNote'): MindMapDocument {
@@ -265,9 +265,10 @@ describe('M2-a core patch engine', () => {
     if (!stale.ok) expect(stale.reason).toBe('stale-target');
 
     const unsupported = planAndValidatePatch(md, doc, 'Test', {
-      type: 'updateNote',
+      type: 'renameAndInsertChild',
       guard: guardFor(doc, child),
-      newNoteBody: 'Deferred to M2-c',
+      newTitle: 'New',
+      childTitle: 'Child',
     });
     expect(unsupported.ok).toBe(false);
     if (!unsupported.ok) expect(unsupported.reason).toBe('unsupported-command');
@@ -692,5 +693,268 @@ describe('M2-b structural edits, split, and task toggle', () => {
     });
     expect(rejPlain.ok).toBe(false);
     if (!rejPlain.ok) expect(rejPlain.reason).toBe('not-a-task');
+  });
+});
+
+describe('M2-c updateNote, reparent (D&D), and pasteBranch (copy/paste)', () => {
+  it('adds, edits, and deletes topic notes on headings and ordered list items while preserving unmapped blocks and rejecting block syntax', () => {
+    const md = [
+      '# Root',
+      '## Section',
+      '```ts',
+      'const untouched = 1;',
+      '```',
+      '1. Ordered Item',
+      '   1. Sub',
+      '',
+    ].join('\n');
+    const doc = parseOk(md);
+    const section = findNode(doc, 'Section');
+
+    // 1. Add multi-line note to heading (above preserved fenced code block)
+    const added = planAndValidatePatch(md, doc, 'Test', {
+      type: 'updateNote',
+      guard: guardFor(doc, section),
+      newNoteBody: 'First paragraph\n\nSecond paragraph',
+    });
+    expect(added.ok).toBe(true);
+    if (!added.ok) return;
+    expect(added.nextRawText).toBe(
+      [
+        '# Root',
+        '## Section',
+        'First paragraph',
+        '',
+        'Second paragraph',
+        '```ts',
+        'const untouched = 1;',
+        '```',
+        '1. Ordered Item',
+        '   1. Sub',
+        '',
+      ].join('\n'),
+    );
+    expect(added.nextDocument.nodes.get(added.focusNodeId)?.noteText).toBe(
+      'First paragraph\n\nSecond paragraph',
+    );
+
+    // 2. Update existing note
+    const section2 = findNode(added.nextDocument, 'Section');
+    const updated = planAndValidatePatch(added.nextRawText, added.nextDocument, 'Test', {
+      type: 'updateNote',
+      guard: guardFor(added.nextDocument, section2),
+      newNoteBody: 'Updated single paragraph',
+    });
+    expect(updated.ok).toBe(true);
+    if (!updated.ok) return;
+    expect(updated.nextDocument.nodes.get(updated.focusNodeId)?.noteText).toBe(
+      'Updated single paragraph',
+    );
+
+    // 3. Delete note by saving empty string
+    const section3 = findNode(updated.nextDocument, 'Section');
+    const deleted = planAndValidatePatch(updated.nextRawText, updated.nextDocument, 'Test', {
+      type: 'updateNote',
+      guard: guardFor(updated.nextDocument, section3),
+      newNoteBody: '   \n  ',
+    });
+    expect(deleted.ok).toBe(true);
+    if (!deleted.ok) return;
+    expect(deleted.nextRawText).toBe(md);
+
+    // 4. Add multi-paragraph note on ordered list item -> auto-indents to 3 spaces
+    const ordered = findNode(deleted.nextDocument, 'Ordered Item');
+    const orderedNote = planAndValidatePatch(deleted.nextRawText, deleted.nextDocument, 'Test', {
+      type: 'updateNote',
+      guard: guardFor(deleted.nextDocument, ordered),
+      newNoteBody: 'Line one\n\nLine two',
+    });
+    expect(orderedNote.ok).toBe(true);
+    if (!orderedNote.ok) return;
+    expect(orderedNote.nextRawText).toContain('1. Ordered Item\n   Line one\n\n   Line two\n   1. Sub\n');
+    expect(orderedNote.nextDocument.nodes.get(orderedNote.focusNodeId)?.noteText).toBe(
+      'Line one\n\nLine two',
+    );
+
+    // 5. Reject Markdown block syntax inside topic notes (fail-closed)
+    for (const badBody of [
+      '## Heading in note',
+      '- List item in note',
+      '```js\ncode()\n```',
+      '> Blockquote',
+      '| A | B |\n|---|---|\n| 1 | 2 |',
+      '$$\nx^2\n$$',
+      '---',
+      '<div>html</div>',
+    ]) {
+      const rejected = planAndValidatePatch(md, doc, 'Test', {
+        type: 'updateNote',
+        guard: guardFor(doc, section),
+        newNoteBody: badBody,
+      });
+      expect(rejected.ok).toBe(false);
+      if (!rejected.ok) expect(rejected.reason).toBe('invalid-note-block-syntax');
+    }
+  });
+
+  it('reparents headings and list subtrees across parents with level/indent adjustment and safety guards', () => {
+    // 1. Reparent heading under another heading -> shifts heading levels automatically
+    const headingMd = [
+      '# Root',
+      '## Branch A',
+      '### Child A1',
+      '## Branch B',
+      '### Child B1',
+      '',
+    ].join('\n');
+    const headingDoc = parseOk(headingMd);
+    const branchA = findNode(headingDoc, 'Branch A');
+    const branchB = findNode(headingDoc, 'Branch B');
+
+    const movedHeading = planAndValidatePatch(headingMd, headingDoc, 'Test', {
+      type: 'reparent',
+      guard: guardFor(headingDoc, branchA),
+      targetParentId: branchB.id,
+      index: 1,
+    });
+    expect(movedHeading.ok).toBe(true);
+    if (!movedHeading.ok) return;
+    expect(movedHeading.nextRawText).toBe(
+      ['# Root', '## Branch B', '### Child B1', '### Branch A', '#### Child A1', ''].join('\n'),
+    );
+    const movedANode = movedHeading.nextDocument.nodes.get(movedHeading.focusNodeId);
+    expect(movedANode?.titleRaw).toBe('Branch A');
+    expect(movedANode?.headingLevel).toBe(3);
+
+    // 2. Reparent list subtree across parents (preserving nested children & adjusting indent)
+    const listMd = [
+      '# Root',
+      '- Alpha',
+      '  - Alpha 1',
+      '    - Alpha 1a',
+      '- Beta',
+      '  - Beta 1',
+      '',
+    ].join('\n');
+    const listDoc = parseOk(listMd);
+    const alpha1 = findNode(listDoc, 'Alpha 1');
+    const beta = findNode(listDoc, 'Beta');
+    const reparentList = planAndValidatePatch(listMd, listDoc, 'Test', {
+      type: 'reparent',
+      guard: guardFor(listDoc, alpha1),
+      targetParentId: beta.id,
+      index: 0,
+    });
+    expect(reparentList.ok).toBe(true);
+    if (!reparentList.ok) return;
+    expect(reparentList.nextRawText).toBe(
+      ['# Root', '- Alpha', '- Beta', '  - Alpha 1', '    - Alpha 1a', '  - Beta 1', ''].join(
+        '\n',
+      ),
+    );
+
+    // 3. Reject cycle (moving parent under its own descendant)
+    const alpha = findNode(listDoc, 'Alpha');
+    const alpha1a = findNode(listDoc, 'Alpha 1a');
+    const cycle = planAndValidatePatch(listMd, listDoc, 'Test', {
+      type: 'reparent',
+      guard: guardFor(listDoc, alpha),
+      targetParentId: alpha1a.id,
+      index: 0,
+    });
+    expect(cycle.ok).toBe(false);
+    if (!cycle.ok) expect(cycle.reason).toBe('boundary-no-op');
+
+    // 4. Reject heading under list item (mixed heading/list conversion)
+    const mixedMd = '# Root\n## Head\n- Item\n';
+    const mixedDoc = parseOk(mixedMd);
+    const head = findNode(mixedDoc, 'Head');
+    const item = findNode(mixedDoc, 'Item');
+    const mixedRej = planAndValidatePatch(mixedMd, mixedDoc, 'Test', {
+      type: 'reparent',
+      guard: guardFor(mixedDoc, head),
+      targetParentId: item.id,
+      index: 0,
+    });
+    expect(mixedRej.ok).toBe(false);
+    if (!mixedRej.ok) expect(mixedRej.reason).toBe('boundary-no-op'); // item is descendant of head
+
+    const sepMixedMd = '# Root\n## Head A\n## Head B\n- Item B\n';
+    const sepMixedDoc = parseOk(sepMixedMd);
+    const headA = findNode(sepMixedDoc, 'Head A');
+    const itemB = findNode(sepMixedDoc, 'Item B');
+    const sepMixedRej = planAndValidatePatch(sepMixedMd, sepMixedDoc, 'Test', {
+      type: 'reparent',
+      guard: guardFor(sepMixedDoc, headA),
+      targetParentId: itemB.id,
+      index: 0,
+    });
+    expect(sepMixedRej.ok).toBe(false);
+    if (!sepMixedRej.ok) expect(sepMixedRej.reason).toBe('mixed-heading-list-conversion');
+  });
+
+  it('extracts and pastes heading branches, deeply indented list branches (4+ spaces), and plain text cleanly', () => {
+    const md = [
+      '# Root',
+      '## Source',
+      '- L1',
+      '  - L2',
+      '    - Deep L3',
+      '      - Deep L4',
+      '## Target',
+      '```ts',
+      'const keep = true;',
+      '```',
+      '',
+    ].join('\n');
+    const doc = parseOk(md);
+    const source = findNode(doc, 'Source');
+    const deepL3 = findNode(doc, 'Deep L3');
+    const target = findNode(doc, 'Target');
+
+    // 1. Copy & paste deeply indented list subtree (4 spaces) directly under ## Target
+    const copiedDeep = extractSubtreeMarkdown(md, deepL3);
+    expect(copiedDeep).toBe('    - Deep L3\n      - Deep L4');
+
+    const pastedDeep = planAndValidatePatch(md, doc, 'Test', {
+      type: 'pasteBranch',
+      guard: guardFor(doc, target),
+      subtreeMarkdown: copiedDeep,
+    });
+    expect(pastedDeep.ok).toBe(true);
+    if (!pastedDeep.ok) return;
+    expect(pastedDeep.nextRawText).toContain('```\n- Deep L3\n  - Deep L4\n');
+    expect(pastedDeep.nextDocument.nodes.get(pastedDeep.focusNodeId)?.titleRaw).toBe('Deep L3');
+
+    // 2. Copy & paste heading subtree into another heading -> shifts ## -> ###
+    const copiedHeading = extractSubtreeMarkdown(md, source);
+    const pastedHeading = planAndValidatePatch(md, doc, 'Test', {
+      type: 'pasteBranch',
+      guard: guardFor(doc, target),
+      subtreeMarkdown: copiedHeading,
+    });
+    expect(pastedHeading.ok).toBe(true);
+    if (!pastedHeading.ok) return;
+    expect(pastedHeading.nextRawText).toContain('### Source\n- L1\n  - L2\n    - Deep L3\n      - Deep L4\n');
+    expect(pastedHeading.nextDocument.nodes.get(pastedHeading.focusNodeId)?.headingLevel).toBe(3);
+
+    // 3. Plain single-line text pastes as a child topic
+    const pastedPlain = planAndValidatePatch(md, doc, 'Test', {
+      type: 'pasteBranch',
+      guard: guardFor(doc, target),
+      subtreeMarkdown: 'Plain Idea',
+    });
+    expect(pastedPlain.ok).toBe(true);
+    if (!pastedPlain.ok) return;
+    expect(pastedPlain.nextDocument.nodes.get(pastedPlain.focusNodeId)?.titleRaw).toBe('Plain Idea');
+
+    // 4. Multi-line non-topic text is rejected cleanly
+    const pastedBad = planAndValidatePatch(md, doc, 'Test', {
+      type: 'pasteBranch',
+      guard: guardFor(doc, target),
+      subtreeMarkdown: 'Line one\nLine two',
+    });
+    expect(pastedBad.ok).toBe(false);
+    if (!pastedBad.ok) expect(pastedBad.reason).toBe('invalid-note-block-syntax');
   });
 });

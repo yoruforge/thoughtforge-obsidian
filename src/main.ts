@@ -11,6 +11,7 @@ import { registerPluginCommands } from './obsidian/commands';
 import { MINDMAP_VIEW_TYPE, MindMapView } from './obsidian/MindMapView';
 import { ObsidianHostAdapter } from './obsidian/ObsidianHostAdapter';
 import { MindMapSettingTab } from './obsidian/settingsTab';
+import { DraftStore } from './sync/DraftStore';
 import { FileCoordinator } from './sync/FileCoordinator';
 
 function isValidDraftEntry(value: unknown): value is DraftEntry {
@@ -22,6 +23,12 @@ function isValidDraftEntry(value: unknown): value is DraftEntry {
     typeof entry['filePath'] === 'string' &&
     (entry['field'] === 'title' || entry['field'] === 'note') &&
     typeof entry['targetTitleRaw'] === 'string' &&
+    (entry['targetHeaderLine'] === undefined || typeof entry['targetHeaderLine'] === 'number') &&
+    (entry['targetOwnRangeHash'] === undefined ||
+      typeof entry['targetOwnRangeHash'] === 'string') &&
+    (entry['targetAncestorPath'] === undefined ||
+      (Array.isArray(entry['targetAncestorPath']) &&
+        entry['targetAncestorPath'].every((seg) => typeof seg === 'string'))) &&
     typeof entry['baseContentHash'] === 'string' &&
     typeof entry['text'] === 'string' &&
     typeof entry['savedAt'] === 'number'
@@ -122,6 +129,9 @@ export default class ThoughtForgePlugin extends Plugin {
   private pluginData: PluginDataV1 = DEFAULT_PLUGIN_DATA;
   private dataWritable = true;
   private fileCoordinator: FileCoordinator | null = null;
+  private draftStore: DraftStore | null = null;
+  private branchClipboardMarkdown: string | null = null;
+  private branchClipboardSyncedToOs = true;
   messages: Messages = getMessages('en');
 
   get mindMapSettings(): PluginSettings {
@@ -135,12 +145,42 @@ export default class ThoughtForgePlugin extends Plugin {
     return this.fileCoordinator;
   }
 
+  getDraftStore(): DraftStore {
+    if (this.draftStore === null) {
+      this.draftStore = new DraftStore(this.pluginData.drafts, async (nextDrafts) => {
+        this.pluginData = {
+          ...this.pluginData,
+          drafts: nextDrafts,
+        };
+        if (this.dataWritable) {
+          await this.saveData(this.pluginData);
+        }
+        this.refreshAllViews();
+      });
+    }
+    return this.draftStore;
+  }
+
+  setBranchClipboard(markdown: string, syncedToOs: boolean): void {
+    this.branchClipboardMarkdown = markdown;
+    this.branchClipboardSyncedToOs = syncedToOs;
+  }
+
+  getBranchClipboard(): { readonly markdown: string | null; readonly syncedToOs: boolean } {
+    return {
+      markdown: this.branchClipboardMarkdown,
+      syncedToOs: this.branchClipboardSyncedToOs,
+    };
+  }
+
   async onload(): Promise<void> {
     this.messages = getMessages(moment.locale());
 
     const loaded = parseStoredPluginData(await this.loadData());
     this.pluginData = loaded.data;
     this.dataWritable = loaded.writable;
+    this.draftStore = null;
+    this.getDraftStore();
 
     this.registerView(MINDMAP_VIEW_TYPE, (leaf) => new MindMapView(leaf, this));
     registerPluginCommands(this);
@@ -165,6 +205,7 @@ export default class ThoughtForgePlugin extends Plugin {
           return;
         }
         this.fileCoordinator?.renameHistoryPath(oldPath, abstractFile.path);
+        void this.draftStore?.renameFilePath(oldPath, abstractFile.path);
         for (const leaf of this.app.workspace.getLeavesOfType(MINDMAP_VIEW_TYPE)) {
           if (leaf.view instanceof MindMapView && leaf.view.file?.path === abstractFile.path) {
             void leaf.view.reloadFromFile(abstractFile);
@@ -190,6 +231,8 @@ export default class ThoughtForgePlugin extends Plugin {
 
   onunload(): void {
     this.fileCoordinator = null;
+    this.draftStore = null;
+    this.branchClipboardMarkdown = null;
     // Workspace view cleanup is handled via MindMapView.onClose().
   }
 

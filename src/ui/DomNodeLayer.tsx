@@ -1,4 +1,10 @@
-import { useState, type CSSProperties, type MouseEvent, type MutableRefObject } from 'react';
+import {
+  useState,
+  type CSSProperties,
+  type MouseEvent,
+  type MutableRefObject,
+  type PointerEvent as ReactPointerEvent,
+} from 'react';
 import type { ColorStyleMode, LayoutNode, MindMapDocument, TopicLink } from '../core/model';
 import {
   getBranchColor,
@@ -7,6 +13,7 @@ import {
   type MapThemePalette,
 } from '../core/layout/theme';
 import { tokenizeTopicTitle } from '../core/view/topicPresentation';
+import type { DropTarget } from './dragDrop';
 import type { EditingSession } from './editSession';
 import { BlockIcon, CheckIcon, LinkIcon, NoteIcon } from './Icons';
 import type { GuardableKeyEvent } from './imeGuard';
@@ -77,17 +84,31 @@ export interface DomNodeLayerProps {
   readonly palette: MapThemePalette;
   readonly rainbowBranches: boolean;
   readonly colorStyle: ColorStyleMode;
+  readonly draggedNodeId?: string | null;
+  readonly dropTarget?: DropTarget | null;
   readonly onSelectNode: (nodeId: string) => void;
   readonly onToggleCollapse: (nodeId: string) => void;
   readonly onOpenPopover: (nodeId: string) => void;
   readonly onOpenLink: (link: TopicLink, newTab: boolean) => void;
   readonly onStartEdit: (nodeId: string) => void;
   readonly onCommitEdit: (session: EditingSession, nextTitle: string) => void;
-  readonly onSplitEdit: (session: EditingSession, leftTitle: string, rightTitle: string) => void;
+  readonly onSplitEdit: (
+    session: EditingSession,
+    leftTitle: string,
+    rightTitle: string,
+    fullValue: string,
+  ) => void;
   readonly inlineSplitTriggerRef?: MutableRefObject<((event: GuardableKeyEvent) => boolean) | null>;
   readonly onCancelEdit: () => void;
   readonly onDiscardEdit: (unsavedValue: string) => void;
   readonly onToggleTask: (nodeId: string) => void;
+  readonly onStartNodeDrag?: (
+    nodeId: string,
+    label: string,
+    pointerId: number,
+    clientX: number,
+    clientY: number,
+  ) => void;
 }
 
 export function DomNodeLayer({
@@ -106,6 +127,8 @@ export function DomNodeLayer({
   palette,
   rainbowBranches,
   colorStyle,
+  draggedNodeId = null,
+  dropTarget = null,
   onSelectNode,
   onToggleCollapse,
   onOpenPopover,
@@ -117,6 +140,7 @@ export function DomNodeLayer({
   onCancelEdit,
   onDiscardEdit,
   onToggleTask,
+  onStartNodeDrag,
 }: DomNodeLayerProps) {
   const [hoveredNoteNodeId, setHoveredNoteNodeId] = useState<string | null>(null);
   const isReadOnly = !canEdit || document.readOnlyReasons.length > 0;
@@ -191,16 +215,34 @@ export function DomNodeLayer({
         const activeEditingSession =
           editingSession !== null && editingSession.nodeId === ln.id ? editingSession : null;
         const isEditing = activeEditingSession !== null;
+        const isDragged = draggedNodeId === ln.id;
+        const dropPlacement =
+          dropTarget !== null && dropTarget.hoverNodeId === ln.id ? dropTarget.placement : null;
         const classNames = [
           'ito-node',
           isCenter ? 'ito-node-center' : `ito-node-${ln.side}`,
           isSelected ? 'ito-node-selected' : '',
           isEditing ? 'ito-node-editing' : '',
           isMatched ? 'ito-node-matched' : '',
+          isDragged ? 'ito-node-dragging' : '',
+          dropPlacement !== null ? `ito-node-drop-${dropPlacement}` : '',
           levelStyle.shape === 'underline' ? 'ito-node-underline' : '',
         ]
           .filter(Boolean)
           .join(' ');
+
+        const handleNodePointerDown = (event: ReactPointerEvent<HTMLDivElement>): void => {
+          if (event.button !== 0 || isCenter || isReadOnly || isEditing || !onStartNodeDrag) {
+            return;
+          }
+          const rawTarget = event.target as { readonly closest?: (sel: string) => unknown } | null;
+          if (typeof rawTarget?.closest === 'function' && rawTarget.closest('button, input')) {
+            return;
+          }
+          event.stopPropagation();
+          const label = topic.displayTitle.length > 0 ? topic.displayTitle : topic.titleRaw;
+          onStartNodeDrag(ln.id, label, event.pointerId, event.clientX, event.clientY);
+        };
 
         const showNoteHover = hoveredNoteNodeId === ln.id && topic.noteText !== null && !isEditing;
 
@@ -231,6 +273,7 @@ export function DomNodeLayer({
             tabIndex={isSelected ? 0 : -1}
             className={classNames}
             style={nodeStyle}
+            onPointerDown={handleNodePointerDown}
             onClick={(event) => {
               event.stopPropagation();
               onSelectNode(ln.id);
@@ -243,15 +286,17 @@ export function DomNodeLayer({
           >
             {activeEditingSession !== null ? (
               <InlineEditor
-                key={`${activeEditingSession.guard.expectedContentHash}:${activeEditingSession.nodeId}`}
-                initialValue={activeEditingSession.initialTitleRaw}
+                key={`${activeEditingSession.guard.expectedContentHash}:${activeEditingSession.nodeId}:${activeEditingSession.draftPrefillValue ?? ''}`}
+                initialValue={
+                  activeEditingSession.draftPrefillValue ?? activeEditingSession.initialTitleRaw
+                }
                 imeGuardWindowMs={imeGuardWindowMs}
                 ariaLabel={inlineEditorLabel}
                 onCommit={(nextTitle) => onCommitEdit(activeEditingSession, nextTitle)}
                 onSplit={
                   !isCenter
-                    ? (leftTitle, rightTitle) =>
-                        onSplitEdit(activeEditingSession, leftTitle, rightTitle)
+                    ? (leftTitle, rightTitle, fullValue) =>
+                        onSplitEdit(activeEditingSession, leftTitle, rightTitle, fullValue)
                     : undefined
                 }
                 splitTriggerRef={inlineSplitTriggerRef}

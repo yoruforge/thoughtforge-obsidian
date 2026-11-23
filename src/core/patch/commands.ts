@@ -87,5 +87,3 @@ export interface PatchFocusHint {
   readonly targetHeaderLine: number;
   readonly expectedTitleRaw: string;
 }
-
-// TODO: [M2-c 構造・ノート・コピペ拡張] - planner.ts / validator.ts に updateNote / reparent / pasteBranch を追加する

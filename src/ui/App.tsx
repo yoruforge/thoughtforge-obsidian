@@ -10,12 +10,14 @@ import { getThemePalette, type ResolvedThemeMode } from '../core/layout/theme';
 import { computeLayout } from '../core/layout/treeLayout';
 import type {
   CameraState,
+  DraftEntry,
   FocusMode,
   LayoutBounds,
   ParseResult,
   PluginSettings,
   StructuredFilterCriteria,
   TopicLink,
+  TopicNode,
 } from '../core/model';
 import type { SemanticCommand } from '../core/patch/commands';
 import {
@@ -31,14 +33,22 @@ import {
   computeTopicNumbering,
 } from '../core/view/topicPresentation';
 import type { Messages } from '../i18n';
+import {
+  resolveDraftTarget,
+  type DraftResolution,
+  type SaveDraftInput,
+} from '../sync/DraftStore';
 import type { CommandDispatchOutcome } from '../sync/ports';
 import {
   buildCommitRenameCommand,
   buildPatchGuard,
   buildSplitSiblingCommand,
+  buildUpdateNoteCommand,
   createEditingSession,
   isEditingSessionValid,
+  isNoteEditingSessionValid,
   type EditingSession,
+  type NoteEditingSession,
 } from './editSession';
 import type { GuardableKeyEvent } from './imeGuard';
 import { shouldIgnoreCanvasKeyEvent } from './keyboardGuard';
@@ -55,6 +65,11 @@ import {
 export interface MindMapActionTriggers {
   readonly editSelected: () => boolean;
   readonly splitEditing: (event: GuardableKeyEvent) => boolean;
+  readonly commitNoteEdit: (event: GuardableKeyEvent) => boolean;
+  readonly editSelectedNote: () => boolean;
+  readonly copySelectedBranch: () => boolean;
+  readonly cutSelectedBranch: () => boolean;
+  readonly pasteBranch: () => boolean;
   readonly undo: () => boolean;
   readonly redo: () => boolean;
   readonly toggleSelectedTask: () => boolean;
@@ -67,6 +82,18 @@ export interface MindMapAppProps {
   readonly themeMode: ResolvedThemeMode;
   readonly settings: PluginSettings;
   readonly messages: Messages;
+  readonly drafts?: readonly DraftEntry[];
+  readonly onSaveDraft?: (input: SaveDraftInput) => Promise<DraftEntry>;
+  readonly onDeleteDraft?: (draftId: string) => Promise<void>;
+  readonly onDeleteMatchingDraft?: (
+    filePath: string,
+    field: 'title' | 'note',
+    targetTitleRaw: string,
+    targetHeaderLine: number,
+    targetAncestorPath?: readonly string[],
+  ) => Promise<void>;
+  readonly onCopyBranchSubtree?: (node: TopicNode) => Promise<boolean>;
+  readonly onReadBranchClipboard?: () => Promise<string | null>;
   readonly onOpenMarkdown: (line?: number) => void;
   readonly onOpenLink: (link: TopicLink, newTab: boolean) => void;
   readonly onUpdateSettings?: (patch: Partial<PluginSettings>) => void;
@@ -99,6 +126,12 @@ export function MindMapApp({
   themeMode,
   settings,
   messages,
+  drafts = [],
+  onSaveDraft,
+  onDeleteDraft,
+  onDeleteMatchingDraft,
+  onCopyBranchSubtree,
+  onReadBranchClipboard,
   onOpenMarkdown,
   onOpenLink,
   onUpdateSettings,
@@ -122,6 +155,7 @@ export function MindMapApp({
   const [filterQuery, setFilterQuery] = useState('');
   const [structuredFilter, setStructuredFilter] = useState<StructuredFilterCriteria>({});
   const [popoverOpen, setPopoverOpen] = useState(false);
+  const [noteEditRequestToken, setNoteEditRequestToken] = useState(0);
   const [stylesOpen, setStylesOpen] = useState(false);
   const [camera, setCamera] = useState<CameraState>({ x: 480, y: 320, zoom: 1 });
 
@@ -130,11 +164,14 @@ export function MindMapApp({
   filePathRef.current = filePath;
   const docRef = useRef(doc);
   docRef.current = doc;
+  const editingSessionRef = useRef(editingSession);
+  editingSessionRef.current = editingSession;
   const viewportSizeRef = useRef<ViewportSize>({ width: 960, height: 640 });
   const hasInitialFitRef = useRef(false);
   const prevLayoutModeRef = useRef(settings.layoutMode);
   const filterInputRef = useRef<HTMLInputElement | null>(null);
   const inlineSplitTriggerRef = useRef<((event: GuardableKeyEvent) => boolean) | null>(null);
+  const noteCommitTriggerRef = useRef<((event: GuardableKeyEvent) => boolean) | null>(null);
   const isCommandInFlightRef = useRef(false);
 
   // Reset per-note view state when switching to a different Markdown file
@@ -163,6 +200,17 @@ export function MindMapApp({
   const effectiveEditingSession = useMemo(() => {
     return isEditingSessionValid(editingSession, filePath, doc) ? editingSession : null;
   }, [editingSession, filePath, doc]);
+
+  // Resolve each draft fail-closed: only uniquely identified drafts auto-attach to a topic;
+  // ambiguous or unmatched drafts require explicit user confirmation before restoring.
+  const draftResolutions = useMemo(() => {
+    const map = new Map<string, DraftResolution>();
+    if (!doc) return map;
+    for (const draft of drafts) {
+      map.set(draft.draftId, resolveDraftTarget(doc, draft));
+    }
+    return map;
+  }, [doc, drafts]);
 
   const availableTags = useMemo(() => (doc ? collectDocumentTags(doc) : []), [doc]);
   const textStats = useMemo(
@@ -382,14 +430,21 @@ export function MindMapApp({
       command: SemanticCommand,
       openInlineEditorAfter: boolean,
       expandParentId?: string,
-    ): Promise<void> => {
-      if (!onDispatchCommand || isCommandInFlightRef.current) return;
+    ): Promise<CommandDispatchOutcome> => {
+      if (!onDispatchCommand) {
+        return { accepted: false, rejectCode: 'unsupported-command' };
+      }
+      if (isCommandInFlightRef.current) {
+        // Distinct from 'boundary-no-op' so callers keep (or draft) the user's input
+        // instead of treating the edit as already applied.
+        return { accepted: false, rejectCode: 'command-in-flight' };
+      }
       const startedFilePath = filePathRef.current;
       isCommandInFlightRef.current = true;
       try {
         const outcome = await onDispatchCommand(command);
         if (filePathRef.current !== startedFilePath) {
-          return;
+          return outcome;
         }
         if (outcome.accepted && outcome.focusNodeId !== undefined) {
           if (expandParentId !== undefined) {
@@ -409,12 +464,15 @@ export function MindMapApp({
                 createEditingSession(startedFilePath, outcome.nextDocument, focusedNode),
               );
             }
-          } else {
+          } else if (command.type !== 'updateNote') {
             rootRef.current?.focus({ preventScroll: true });
           }
         } else if (!outcome.accepted && outcome.rejectCode === 'boundary-no-op') {
-          rootRef.current?.focus({ preventScroll: true });
+          if (command.type !== 'updateNote') {
+            rootRef.current?.focus({ preventScroll: true });
+          }
         }
+        return outcome;
       } finally {
         isCommandInFlightRef.current = false;
       }
@@ -465,13 +523,34 @@ export function MindMapApp({
 
   const handleDiscardEdit = useCallback(
     (unsavedValue: string) => {
+      const lastSession = editingSessionRef.current;
+      if (lastSession && onSaveDraft && unsavedValue.trim().length > 0) {
+        void onSaveDraft({
+          filePath: lastSession.filePath,
+          field: 'title',
+          targetTitleRaw: lastSession.initialTitleRaw,
+          targetHeaderLine: lastSession.targetHeaderLine,
+          targetOwnRangeHash: lastSession.guard.expectedOwnRangeHash,
+          targetAncestorPath: lastSession.targetAncestorPath,
+          baseContentHash: lastSession.guard.expectedContentHash,
+          text: unsavedValue,
+        });
+      }
       onNotify?.(`${messages.edit.unsavedInputDiscarded}${unsavedValue}`);
     },
-    [messages, onNotify],
+    [messages, onNotify, onSaveDraft],
   );
 
   const handleCommitEdit = useCallback(
     (session: EditingSession, nextTitle: string) => {
+      const {
+        filePath: sessionFilePath,
+        initialTitleRaw,
+        targetHeaderLine,
+        targetAncestorPath,
+        restoredDraftId,
+        guard,
+      } = session;
       setEditingSession(null);
       rootRef.current?.focus();
       if (!onDispatchCommand) return;
@@ -480,30 +559,339 @@ export function MindMapApp({
         return;
       }
       if (!isEditingSessionValid(session, filePathRef.current, docRef.current)) {
-        handleDiscardEdit(nextTitle);
+        if (onSaveDraft) {
+          void onSaveDraft({
+            filePath: sessionFilePath,
+            field: 'title',
+            targetTitleRaw: initialTitleRaw,
+            targetHeaderLine,
+            targetOwnRangeHash: guard.expectedOwnRangeHash,
+            targetAncestorPath,
+            baseContentHash: guard.expectedContentHash,
+            text: nextTitle,
+          });
+        }
+        onNotify?.(`${messages.edit.unsavedInputDiscarded}${nextTitle}`);
         return;
       }
-      void dispatchAndFocus(command, false);
+      void dispatchAndFocus(command, false).then((outcome) => {
+        if (outcome.accepted) {
+          void onDeleteMatchingDraft?.(
+            sessionFilePath,
+            'title',
+            initialTitleRaw,
+            targetHeaderLine,
+            targetAncestorPath,
+          );
+          if (restoredDraftId !== undefined) {
+            void onDeleteDraft?.(restoredDraftId);
+          }
+        } else if (outcome.rejectCode !== 'boundary-no-op' && onSaveDraft) {
+          void onSaveDraft({
+            filePath: sessionFilePath,
+            field: 'title',
+            targetTitleRaw: initialTitleRaw,
+            targetHeaderLine,
+            targetOwnRangeHash: guard.expectedOwnRangeHash,
+            targetAncestorPath,
+            baseContentHash: guard.expectedContentHash,
+            text: nextTitle,
+          });
+          onNotify?.(messages.edit.draftSavedNotice);
+        }
+      });
     },
-    [onDispatchCommand, dispatchAndFocus, handleDiscardEdit],
+    [
+      onDispatchCommand,
+      dispatchAndFocus,
+      onSaveDraft,
+      onDeleteMatchingDraft,
+      onDeleteDraft,
+      onNotify,
+      messages,
+    ],
   );
 
+  const handleCommitNote = useCallback(
+    async (
+      session: NoteEditingSession,
+      nextNoteBody: string,
+    ): Promise<CommandDispatchOutcome> => {
+      const {
+        filePath: sessionFilePath,
+        targetTitleRaw,
+        targetHeaderLine,
+        targetAncestorPath,
+        restoredDraftId,
+        guard,
+      } = session;
+      if (!onDispatchCommand) {
+        return { accepted: false, rejectCode: 'unsupported-command' };
+      }
+      const command = buildUpdateNoteCommand(session, filePathRef.current, nextNoteBody);
+      if (command === null || !isNoteEditingSessionValid(session, filePathRef.current, docRef.current)) {
+        if (onSaveDraft) {
+          await onSaveDraft({
+            filePath: sessionFilePath,
+            field: 'note',
+            targetTitleRaw,
+            targetHeaderLine,
+            targetOwnRangeHash: guard.expectedOwnRangeHash,
+            targetAncestorPath,
+            baseContentHash: guard.expectedContentHash,
+            text: nextNoteBody,
+          });
+        }
+        onNotify?.(messages.edit.draftSavedNotice);
+        return { accepted: false, rejectCode: 'stale-target' };
+      }
+
+      const outcome = await dispatchAndFocus(command, false);
+      if (outcome.accepted) {
+        void onDeleteMatchingDraft?.(
+          sessionFilePath,
+          'note',
+          targetTitleRaw,
+          targetHeaderLine,
+          targetAncestorPath,
+        );
+        if (restoredDraftId !== undefined) {
+          void onDeleteDraft?.(restoredDraftId);
+        }
+      } else if (outcome.rejectCode !== 'boundary-no-op' && onSaveDraft) {
+        await onSaveDraft({
+          filePath: sessionFilePath,
+          field: 'note',
+          targetTitleRaw,
+          targetHeaderLine,
+          targetOwnRangeHash: guard.expectedOwnRangeHash,
+          targetAncestorPath,
+          baseContentHash: guard.expectedContentHash,
+          text: nextNoteBody,
+        });
+        if (outcome.rejectCode !== 'invalid-note-block-syntax') {
+          onNotify?.(messages.edit.draftSavedNotice);
+        }
+      }
+      return outcome;
+    },
+    [
+      onDispatchCommand,
+      dispatchAndFocus,
+      onSaveDraft,
+      onDeleteMatchingDraft,
+      onDeleteDraft,
+      onNotify,
+      messages,
+    ],
+  );
+
+  const handleRescueNoteDraft = useCallback(
+    (session: NoteEditingSession, unsavedBody: string) => {
+      if (!onSaveDraft) return;
+      void onSaveDraft({
+        filePath: session.filePath,
+        field: 'note',
+        targetTitleRaw: session.targetTitleRaw,
+        targetHeaderLine: session.targetHeaderLine,
+        targetOwnRangeHash: session.guard.expectedOwnRangeHash,
+        targetAncestorPath: session.targetAncestorPath,
+        baseContentHash: session.guard.expectedContentHash,
+        text: unsavedBody,
+      });
+      onNotify?.(messages.edit.draftSavedNotice);
+    },
+    [onSaveDraft, onNotify, messages],
+  );
+
+  const handleRestoreTitleDraft = useCallback(
+    (nodeId: string, draftText: string, draftId: string) => {
+      if (!doc || !onDispatchCommand || doc.readOnlyReasons.length > 0) return;
+      const node = doc.nodes.get(nodeId);
+      if (!node) return;
+      setPopoverOpen(false);
+      setStylesOpen(false);
+      setSelectedId(nodeId);
+      setEditingSession(createEditingSession(filePath, doc, node, draftText, draftId));
+    },
+    [doc, filePath, onDispatchCommand],
+  );
+
+  const handleInspectDrafts = useCallback(() => {
+    if (!doc || drafts.length === 0) return;
+    let targetId: string | null = null;
+    for (const draft of drafts) {
+      const res = draftResolutions.get(draft.draftId);
+      if (res?.status === 'matched') {
+        targetId = res.nodeId;
+        break;
+      }
+    }
+    if (targetId === null) {
+      for (const draft of drafts) {
+        const res = draftResolutions.get(draft.draftId);
+        if (res?.status === 'ambiguous' && res.candidateNodeIds[0] !== undefined) {
+          targetId = res.candidateNodeIds[0];
+          break;
+        }
+      }
+    }
+    setSelectedId(targetId ?? doc.rootId);
+    setStylesOpen(false);
+    setPopoverOpen(true);
+  }, [doc, drafts, draftResolutions]);
+
+  const handleReparentNode = useCallback(
+    (nodeId: string, targetParentId: string, index: number) => {
+      if (!doc || !onDispatchCommand) return;
+      const node = doc.nodes.get(nodeId);
+      if (!node) return;
+      void dispatchAndFocus(
+        {
+          type: 'reparent',
+          guard: buildPatchGuard(doc, node),
+          targetParentId,
+          index,
+        },
+        false,
+        targetParentId,
+      );
+    },
+    [doc, onDispatchCommand, dispatchAndFocus],
+  );
+
+  const handleCopyBranch = useCallback(async (): Promise<void> => {
+    if (!doc || effectiveSelectedId === null || !onCopyBranchSubtree) return;
+    const node = doc.nodes.get(effectiveSelectedId);
+    if (!node || node.id === doc.rootId || node.kind === 'central-virtual') {
+      onNotify?.(messages.edit.cannotModifyRoot);
+      return;
+    }
+    const copied = await onCopyBranchSubtree(node);
+    if (copied) {
+      onNotify?.(messages.edit.branchCopiedNotice);
+    }
+  }, [doc, effectiveSelectedId, onCopyBranchSubtree, onNotify, messages]);
+
+  const handleCutBranch = useCallback(async (): Promise<void> => {
+    if (!doc || effectiveSelectedId === null || !onCopyBranchSubtree || !onDispatchCommand) return;
+    const node = doc.nodes.get(effectiveSelectedId);
+    if (!node || node.id === doc.rootId || node.kind === 'central-virtual') {
+      onNotify?.(messages.edit.cannotModifyRoot);
+      return;
+    }
+    const copied = await onCopyBranchSubtree(node);
+    if (!copied) return;
+    const outcome = await dispatchAndFocus(
+      {
+        type: 'deleteBranch',
+        guard: buildPatchGuard(doc, node),
+      },
+      false,
+    );
+    if (outcome.accepted) {
+      onNotify?.(messages.edit.branchCutNotice);
+    }
+  }, [doc, effectiveSelectedId, onCopyBranchSubtree, onDispatchCommand, dispatchAndFocus, onNotify, messages]);
+
+  const handlePasteBranch = useCallback(async (): Promise<void> => {
+    if (!doc || effectiveSelectedId === null || !onReadBranchClipboard || !onDispatchCommand) return;
+    const node = doc.nodes.get(effectiveSelectedId);
+    if (!node) return;
+    const subtreeMarkdown = await onReadBranchClipboard();
+    if (!subtreeMarkdown || subtreeMarkdown.trim().length === 0) {
+      onNotify?.(messages.edit.clipboardEmptyNotice);
+      return;
+    }
+    void dispatchAndFocus(
+      {
+        type: 'pasteBranch',
+        guard: buildPatchGuard(doc, node),
+        subtreeMarkdown,
+      },
+      false,
+      node.id,
+    );
+  }, [doc, effectiveSelectedId, onReadBranchClipboard, onDispatchCommand, dispatchAndFocus, onNotify, messages]);
+
+  const handleOpenNoteEditor = useCallback((): boolean => {
+    if (!doc || effectiveSelectedId === null) return false;
+    setStylesOpen(false);
+    setEditingSession(null);
+    setPopoverOpen(true);
+    setNoteEditRequestToken((prev) => prev + 1);
+    return true;
+  }, [doc, effectiveSelectedId]);
+
   const handleSplitEdit = useCallback(
-    (session: EditingSession, leftTitle: string, rightTitle: string) => {
+    (session: EditingSession, leftTitle: string, rightTitle: string, fullValue: string) => {
+      const {
+        filePath: sessionFilePath,
+        initialTitleRaw,
+        targetHeaderLine,
+        targetAncestorPath,
+        restoredDraftId,
+        guard,
+      } = session;
       setEditingSession(null);
       rootRef.current?.focus();
       if (!onDispatchCommand) return;
+
+      const rescueFullInput = (): void => {
+        if (onSaveDraft && fullValue.trim().length > 0) {
+          void onSaveDraft({
+            filePath: sessionFilePath,
+            field: 'title',
+            targetTitleRaw: initialTitleRaw,
+            targetHeaderLine,
+            targetOwnRangeHash: guard.expectedOwnRangeHash,
+            targetAncestorPath,
+            baseContentHash: guard.expectedContentHash,
+            text: fullValue,
+          });
+        }
+      };
+
       const command = buildSplitSiblingCommand(session, filePathRef.current, leftTitle, rightTitle);
       if (command === null) {
+        if (fullValue.trim().length > 0 && fullValue.trim() !== initialTitleRaw) {
+          rescueFullInput();
+          onNotify?.(messages.edit.draftSavedNotice);
+        }
         return;
       }
       if (!isEditingSessionValid(session, filePathRef.current, docRef.current)) {
-        handleDiscardEdit(`${leftTitle} ${rightTitle}`);
+        rescueFullInput();
+        onNotify?.(`${messages.edit.unsavedInputDiscarded}${fullValue}`);
         return;
       }
-      void dispatchAndFocus(command, false);
+      void dispatchAndFocus(command, false).then((outcome) => {
+        if (outcome.accepted) {
+          void onDeleteMatchingDraft?.(
+            sessionFilePath,
+            'title',
+            initialTitleRaw,
+            targetHeaderLine,
+            targetAncestorPath,
+          );
+          if (restoredDraftId !== undefined) {
+            void onDeleteDraft?.(restoredDraftId);
+          }
+        } else if (outcome.rejectCode !== 'boundary-no-op') {
+          rescueFullInput();
+          onNotify?.(messages.edit.draftSavedNotice);
+        }
+      });
     },
-    [onDispatchCommand, dispatchAndFocus, handleDiscardEdit],
+    [
+      onDispatchCommand,
+      dispatchAndFocus,
+      onSaveDraft,
+      onDeleteMatchingDraft,
+      onDeleteDraft,
+      onNotify,
+      messages,
+    ],
   );
 
   const handleCancelEdit = useCallback(() => {
@@ -530,6 +918,11 @@ export function MindMapApp({
   const actionTriggersRef = useRef<MindMapActionTriggers>({
     editSelected: () => false,
     splitEditing: () => false,
+    commitNoteEdit: () => false,
+    editSelectedNote: () => false,
+    copySelectedBranch: () => false,
+    cutSelectedBranch: () => false,
+    pasteBranch: () => false,
     undo: () => false,
     redo: () => false,
     toggleSelectedTask: () => false,
@@ -546,6 +939,32 @@ export function MindMapApp({
     splitEditing: (event: GuardableKeyEvent): boolean => {
       if (effectiveEditingSession === null) return false;
       return inlineSplitTriggerRef.current?.(event) ?? false;
+    },
+    commitNoteEdit: (event: GuardableKeyEvent): boolean => {
+      return noteCommitTriggerRef.current?.(event) ?? false;
+    },
+    editSelectedNote: (): boolean => {
+      if (!doc || !layout || effectiveEditingSession !== null) return false;
+      return handleOpenNoteEditor();
+    },
+    copySelectedBranch: (): boolean => {
+      if (!doc || effectiveEditingSession !== null || !onCopyBranchSubtree) return false;
+      void handleCopyBranch();
+      return true;
+    },
+    cutSelectedBranch: (): boolean => {
+      if (!doc || effectiveEditingSession !== null || !onCopyBranchSubtree || !onDispatchCommand) {
+        return false;
+      }
+      void handleCutBranch();
+      return true;
+    },
+    pasteBranch: (): boolean => {
+      if (!doc || effectiveEditingSession !== null || !onReadBranchClipboard || !onDispatchCommand) {
+        return false;
+      }
+      void handlePasteBranch();
+      return true;
     },
     undo: (): boolean => {
       if (!doc || !onUndo || effectiveEditingSession !== null) return false;
@@ -575,6 +994,11 @@ export function MindMapApp({
     const triggers: MindMapActionTriggers = {
       editSelected: () => actionTriggersRef.current.editSelected(),
       splitEditing: (event: GuardableKeyEvent) => actionTriggersRef.current.splitEditing(event),
+      commitNoteEdit: (event: GuardableKeyEvent) => actionTriggersRef.current.commitNoteEdit(event),
+      editSelectedNote: () => actionTriggersRef.current.editSelectedNote(),
+      copySelectedBranch: () => actionTriggersRef.current.copySelectedBranch(),
+      cutSelectedBranch: () => actionTriggersRef.current.cutSelectedBranch(),
+      pasteBranch: () => actionTriggersRef.current.pasteBranch(),
       undo: () => actionTriggersRef.current.undo(),
       redo: () => actionTriggersRef.current.redo(),
       toggleSelectedTask: () => actionTriggersRef.current.toggleSelectedTask(),
@@ -718,6 +1142,40 @@ export function MindMapApp({
         }
       }
 
+      if (event.shiftKey && event.key.toLowerCase() === 't') {
+        event.preventDefault();
+        handleOpenNoteEditor();
+        return;
+      }
+
+      if (!event.shiftKey && event.key.toLowerCase() === 'c' && onCopyBranchSubtree) {
+        event.preventDefault();
+        void handleCopyBranch();
+        return;
+      }
+
+      if (
+        !event.shiftKey &&
+        event.key.toLowerCase() === 'x' &&
+        onCopyBranchSubtree &&
+        onDispatchCommand
+      ) {
+        event.preventDefault();
+        void handleCutBranch();
+        return;
+      }
+
+      if (
+        !event.shiftKey &&
+        event.key.toLowerCase() === 'v' &&
+        onReadBranchClipboard &&
+        onDispatchCommand
+      ) {
+        event.preventDefault();
+        void handlePasteBranch();
+        return;
+      }
+
       return;
     }
 
@@ -841,8 +1299,6 @@ export function MindMapApp({
       event.preventDefault();
       setPopoverOpen((prev) => !prev);
     }
-
-    // TODO: [M2-c 枝コピペ・ノート編集] - Cmd/Ctrl+C/X/V 枝コピペと Cmd/Ctrl+Shift+T トピックノート直接編集（下書き保護付き）を接続する
   };
 
   const handleToggleStyles = useCallback(() => {
@@ -965,13 +1421,36 @@ export function MindMapApp({
           onCancelEdit={handleCancelEdit}
           onDiscardEdit={handleDiscardEdit}
           onToggleTask={handleToggleTask}
+          onReparentNode={handleReparentNode}
         />
 
         {popoverOpen && selectedNode !== null && (
           <NodePopover
+            filePath={filePath}
+            document={doc}
             node={selectedNode}
             messages={messages}
             isReadOnly={doc.readOnlyReasons.length > 0}
+            canEdit={onDispatchCommand !== undefined}
+            imeGuardWindowMs={settings.imeGuardWindowMs}
+            startEditingNoteToken={noteEditRequestToken}
+            nodeDrafts={drafts.filter((d) => {
+              const res = draftResolutions.get(d.draftId);
+              return res?.status === 'matched' && res.nodeId === selectedNode.id;
+            })}
+            ambiguousDrafts={drafts.filter((d) => {
+              const res = draftResolutions.get(d.draftId);
+              if (!res) return false;
+              if (res.status === 'ambiguous') {
+                return res.candidateNodeIds.includes(selectedNode.id);
+              }
+              return res.status === 'unmatched';
+            })}
+            noteCommitTriggerRef={noteCommitTriggerRef}
+            onCommitNote={handleCommitNote}
+            onRescueNoteDraft={handleRescueNoteDraft}
+            onRestoreTitleDraft={handleRestoreTitleDraft}
+            onDeleteDraft={onDeleteDraft ? (id) => void onDeleteDraft(id) : undefined}
             onClose={handleClosePopover}
             onJumpToSource={(line) => onOpenMarkdown(line)}
             onOpenLink={onOpenLink}
@@ -993,6 +1472,7 @@ export function MindMapApp({
           zoomPercent={zoomPercent}
           focusMode={focusMode}
           stylesOpen={stylesOpen}
+          draftCount={drafts.length}
           messages={messages}
           canEdit={onDispatchCommand !== undefined}
           filterActive={visibility.filterActive}
@@ -1000,6 +1480,7 @@ export function MindMapApp({
           onZoomReset={handleZoomReset}
           onCycleFocus={handleCycleFocus}
           onToggleStyles={handleToggleStyles}
+          onInspectDrafts={handleInspectDrafts}
         />
       </div>
     </div>

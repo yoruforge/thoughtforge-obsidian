@@ -5,8 +5,11 @@ import type { ObsidianHostPort } from '../../src/sync/ports';
 import {
   buildCommitRenameCommand,
   buildSplitSiblingCommand,
+  buildUpdateNoteCommand,
   createEditingSession,
+  createNoteEditingSession,
   isEditingSessionValid,
+  isNoteEditingSessionValid,
 } from '../../src/ui/editSession';
 
 function createMemoryHost(initialPath: string, initialText: string): {
@@ -103,5 +106,21 @@ describe('editSession (P1-1 regression)', () => {
       leftTitle: 'Left',
       rightTitle: 'Right',
     });
+
+    // Note editing session binds CAS guard and rejects cross-file commits
+    const noteSession = createNoteEditingSession('notes/a.md', parsed.document, topic);
+    expect(isNoteEditingSessionValid(noteSession, 'notes/a.md', parsed.document)).toBe(true);
+    expect(isNoteEditingSessionValid(noteSession, 'notes/b.md', parsed.document)).toBe(false);
+    expect(buildUpdateNoteCommand(noteSession, 'notes/b.md', 'Body')).toBeNull();
+    expect(buildUpdateNoteCommand(noteSession, 'notes/a.md', 'Body')).toEqual({
+      type: 'updateNote',
+      guard: noteSession.guard,
+      newNoteBody: 'Body',
+    });
+
+    // Title draft prefill preserves original CAS guard expectedTitleRaw
+    const prefilled = createEditingSession('notes/a.md', parsed.document, topic, 'Draft Title');
+    expect(prefilled.draftPrefillValue).toBe('Draft Title');
+    expect(prefilled.guard.expectedTitleRaw).toBe('Topic');
   });
 });

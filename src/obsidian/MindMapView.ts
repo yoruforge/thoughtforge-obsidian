@@ -9,10 +9,12 @@ import {
 import { createElement } from 'react';
 import { createRoot, type Root } from 'react-dom/client';
 import type { ResolvedThemeMode } from '../core/layout/theme';
-import type { ParseResult, TopicLink } from '../core/model';
+import type { ParseResult, TopicLink, TopicNode } from '../core/model';
 import { parseMarkdownToMap } from '../core/parser';
+import { extractSubtreeMarkdown } from '../core/patch';
 import type { SemanticCommand } from '../core/patch/commands';
 import type { Messages } from '../i18n';
+import type { SaveDraftInput } from '../sync/DraftStore';
 import type { CommandDispatchOutcome, SyncRejectCode } from '../sync/ports';
 import { MindMapApp, type MindMapActionTriggers } from '../ui/App';
 import { isInsideMapPopover } from '../ui/keyboardGuard';
@@ -69,8 +71,9 @@ function formatRejectMessage(
       return messages.edit.unsupportedCommand;
     case 'io-error':
       return messages.edit.ioError;
-    case 'invariant-check-failed':
     case 'invalid-note-block-syntax':
+      return messages.edit.invalidNoteBlockSyntax;
+    case 'invariant-check-failed':
     case 'unmapped-delete-requires-confirmation':
       return messages.edit.invariantRejected;
     default:
@@ -134,6 +137,11 @@ function isNodeInsideContainer(container: HTMLElement, target: unknown): boolean
   return false;
 }
 
+function hasNonEmptyWindowSelection(ownerDoc: Document): boolean {
+  const sel = ownerDoc.defaultView?.getSelection?.();
+  return sel !== null && sel !== undefined && sel.toString().length > 0;
+}
+
 export class MindMapView extends FileView {
   private reactRoot: Root | null = null;
   private parseResult: ParseResult | null = null;
@@ -178,12 +186,36 @@ export class MindMapView extends FileView {
       if (shouldTriggerScopeInlineSplit(evt, activeIsInlineEditor)) {
         return this.actionTriggers?.splitEditing(evt) ? false : undefined;
       }
+      const activeIsNoteEditor =
+        hasCssClass(activeEl, 'ito-note-editor-textarea') &&
+        isNodeInsideContainer(this.contentEl, activeEl);
+      if (shouldTriggerScopeInlineSplit(evt, activeIsNoteEditor)) {
+        return this.actionTriggers?.commitNoteEdit(evt) ? false : undefined;
+      }
       if (!this.canHandleScopeShortcut(evt)) return undefined;
       return this.actionTriggers?.editSelected() ? false : undefined;
     });
     this.scope.register(['Mod', 'Shift'], '0', (evt) => {
       if (evt.altKey || !this.canHandleScopeShortcut(evt)) return undefined;
       return this.actionTriggers?.fitSelection() ? false : undefined;
+    });
+    this.scope.register(['Mod', 'Shift'], 't', (evt) => {
+      if (evt.altKey || !this.canHandleScopeShortcut(evt)) return undefined;
+      return this.actionTriggers?.editSelectedNote() ? false : undefined;
+    });
+    this.scope.register(['Mod'], 'c', (evt) => {
+      if (evt.shiftKey || evt.altKey || !this.canHandleScopeShortcut(evt)) return undefined;
+      if (hasNonEmptyWindowSelection(this.contentEl.ownerDocument)) return undefined;
+      return this.actionTriggers?.copySelectedBranch() ? false : undefined;
+    });
+    this.scope.register(['Mod'], 'x', (evt) => {
+      if (evt.shiftKey || evt.altKey || !this.canHandleScopeShortcut(evt)) return undefined;
+      if (hasNonEmptyWindowSelection(this.contentEl.ownerDocument)) return undefined;
+      return this.actionTriggers?.cutSelectedBranch() ? false : undefined;
+    });
+    this.scope.register(['Mod'], 'v', (evt) => {
+      if (evt.shiftKey || evt.altKey || !this.canHandleScopeShortcut(evt)) return undefined;
+      return this.actionTriggers?.pasteBranch() ? false : undefined;
     });
   }
 
@@ -211,6 +243,22 @@ export class MindMapView extends FileView {
 
   triggerToggleSelectedTask(): void {
     this.actionTriggers?.toggleSelectedTask();
+  }
+
+  triggerEditSelectedNote(): void {
+    this.actionTriggers?.editSelectedNote();
+  }
+
+  triggerCopySelectedBranch(): void {
+    this.actionTriggers?.copySelectedBranch();
+  }
+
+  triggerCutSelectedBranch(): void {
+    this.actionTriggers?.cutSelectedBranch();
+  }
+
+  triggerPasteBranch(): void {
+    this.actionTriggers?.pasteBranch();
   }
 
   getViewType(): string {
@@ -383,6 +431,48 @@ export class MindMapView extends FileView {
     return isDark ? 'dark-solarized' : 'light';
   }
 
+  private async copyBranchSubtree(node: TopicNode): Promise<boolean> {
+    const rawText = this.lastRenderedSnapshot?.rawText;
+    if (rawText === undefined || node.kind === 'central-virtual') {
+      return false;
+    }
+    const subtree = extractSubtreeMarkdown(rawText, node);
+    if (subtree.trim().length === 0) {
+      return false;
+    }
+    let syncedToOs = false;
+    try {
+      const clipboard = this.contentEl.ownerDocument.defaultView?.navigator?.clipboard;
+      if (clipboard && typeof clipboard.writeText === 'function') {
+        await clipboard.writeText(subtree);
+        syncedToOs = true;
+      }
+    } catch {
+      syncedToOs = false;
+    }
+    this.plugin.setBranchClipboard(subtree, syncedToOs);
+    return true;
+  }
+
+  private async readBranchClipboard(): Promise<string | null> {
+    const cached = this.plugin.getBranchClipboard();
+    if (!cached.syncedToOs && cached.markdown !== null) {
+      return cached.markdown;
+    }
+    try {
+      const clipboard = this.contentEl.ownerDocument.defaultView?.navigator?.clipboard;
+      if (clipboard && typeof clipboard.readText === 'function') {
+        const text = await clipboard.readText();
+        if (typeof text === 'string' && text.trim().length > 0) {
+          return text;
+        }
+      }
+    } catch {
+      // Fall back to in-plugin clipboard cache when OS clipboard read is unavailable.
+    }
+    return cached.markdown;
+  }
+
   private renderApp(): void {
     if (!this.parseResult) return;
     if (!this.reactRoot) {
@@ -391,13 +481,36 @@ export class MindMapView extends FileView {
       this.reactRoot = createRoot(this.contentEl);
     }
 
+    const activePath = this.file?.path ?? '';
+    const draftStore = this.plugin.getDraftStore();
+    const fileDrafts = activePath.length > 0 ? draftStore.listDraftsForFile(activePath) : [];
+
     this.reactRoot.render(
       createElement(MindMapApp, {
-        filePath: this.file?.path ?? '',
+        filePath: activePath,
         parseResult: this.parseResult,
         themeMode: this.resolveThemeMode(),
         settings: this.plugin.mindMapSettings,
         messages: this.plugin.messages,
+        drafts: fileDrafts,
+        onSaveDraft: (input: SaveDraftInput) => draftStore.saveDraft(input),
+        onDeleteDraft: (draftId: string) => draftStore.deleteDraft(draftId),
+        onDeleteMatchingDraft: (
+          filePath: string,
+          field: 'title' | 'note',
+          targetTitleRaw: string,
+          targetHeaderLine: number,
+          targetAncestorPath?: readonly string[],
+        ) =>
+          draftStore.deleteMatchingDraft(
+            filePath,
+            field,
+            targetTitleRaw,
+            targetHeaderLine,
+            targetAncestorPath,
+          ),
+        onCopyBranchSubtree: (node: TopicNode) => this.copyBranchSubtree(node),
+        onReadBranchClipboard: () => this.readBranchClipboard(),
         onOpenMarkdown: (line?: number) => {
           void this.openMarkdownAtLine(line);
         },

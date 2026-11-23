@@ -66,5 +66,5 @@ export function planAndValidatePatch(
 }
 
 export { applyTextEdits, normalizeToLf, restoreLineEnding } from './apply';
-export { planPatch, type PlanResult } from './planner';
+export { extractSubtreeMarkdown, planPatch, type PlanResult } from './planner';
 export { validatePatchedDocument, type ValidationResult } from './validator';
