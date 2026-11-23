@@ -23,6 +23,8 @@ describe('backlinks (M4-b exact topic resolution & deterministic sorting)', () =
         '### Summary',
         '## **Section** Alpha ^blk-alpha',
         '## 設計方針',
+        '## Phase%20One',
+        '## Phase One',
         '',
       ].join('\n'),
     );
@@ -32,8 +34,14 @@ describe('backlinks (M4-b exact topic resolution & deterministic sorting)', () =
     const twoSummary = summaries.find((n) => doc.nodes.get(n.parentId ?? '')?.titleRaw === 'Two');
     const alphaNode = [...doc.nodes.values()].find((n) => n.preservedBlockId === '^blk-alpha');
     const jpNode = [...doc.nodes.values()].find((n) => n.titleRaw === '設計方針');
-    expect(oneSummary && twoSummary && alphaNode && jpNode).toBeTruthy();
-    if (!oneSummary || !twoSummary || !alphaNode || !jpNode) return;
+    const percentHeading = [...doc.nodes.values()].find((n) => n.titleRaw === 'Phase%20One');
+    const spaceHeading = [...doc.nodes.values()].find((n) => n.titleRaw === 'Phase One');
+    expect(
+      oneSummary && twoSummary && alphaNode && jpNode && percentHeading && spaceHeading,
+    ).toBeTruthy();
+    if (!oneSummary || !twoSummary || !alphaNode || !jpNode || !percentHeading || !spaceHeading) {
+      return;
+    }
 
     // Qualified nested heading link matches ONLY One > Summary, NEVER Two > Summary!
     expect(doesLinkTargetTopicNode(doc, 'Target#One#Summary', oneSummary.id)).toBe(true);
@@ -41,11 +49,19 @@ describe('backlinks (M4-b exact topic resolution & deterministic sorting)', () =
     expect(doesLinkTargetTopicNode(doc, 'Target#Two#Summary', twoSummary.id)).toBe(true);
     expect(doesLinkTargetTopicNode(doc, 'Target#Two#Summary', oneSummary.id)).toBe(false);
 
-    // Block ID, formatted heading, URL-encoded Japanese heading, and plain note link
+    // Block ID, formatted heading, literal & URL-encoded Japanese heading, literal %20 heading, and plain note link
     expect(doesLinkTargetTopicNode(doc, 'Target#^BLK-ALPHA', alphaNode.id)).toBe(true);
     expect(doesLinkTargetTopicNode(doc, 'Target#Section Alpha', alphaNode.id)).toBe(true);
+    expect(doesLinkTargetTopicNode(doc, 'Target#設計方針', jpNode.id)).toBe(true);
     expect(
-      doesLinkTargetTopicNode(doc, 'Target#%E8%A8%AD%E8%A8%88%E6%96%B9%E9%87%9D', jpNode.id),
+      doesLinkTargetTopicNode(doc, 'Target#%E8%A8%AD%E8%A8%88%E6%96%B9%E9%87%9D', jpNode.id, {
+        decodeUrl: true,
+      }),
+    ).toBe(true);
+    expect(doesLinkTargetTopicNode(doc, 'Target#Phase%20One', percentHeading.id)).toBe(true);
+    expect(doesLinkTargetTopicNode(doc, 'Target#Phase%20One', spaceHeading.id)).toBe(false);
+    expect(
+      doesLinkTargetTopicNode(doc, 'Target#Phase%20One', spaceHeading.id, { decodeUrl: true }),
     ).toBe(true);
     expect(doesLinkTargetTopicNode(doc, 'Target', oneSummary.id)).toBe(false);
   });

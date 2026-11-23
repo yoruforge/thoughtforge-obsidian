@@ -14,8 +14,11 @@ export function doesLinkTargetTopicNode(
   doc: MindMapDocument,
   rawLink: string,
   targetNodeId: string,
+  options?: { readonly decodeUrl?: boolean },
 ): boolean {
-  const { subpath } = splitLinkTargetSubpath(rawLink);
+  const { subpath } = splitLinkTargetSubpath(rawLink, {
+    decodePath: options?.decodeUrl ?? false,
+  });
   if (subpath === undefined) {
     return false;
   }

@@ -84,7 +84,9 @@ describe('topicResolver (M4-a cursor-to-map & link subpath resolution)', () => {
 
     // Nested heading path disambiguates identical "Phase 2" headings
     expect(resolveTopicBySubpath(doc, 'Roadmap#Phase 2')).toBe(roadmapPhase2.id);
-    expect(resolveTopicBySubpath(doc, '#Archive#Phase%202')).toBe(archivePhase2.id);
+    expect(resolveTopicBySubpath(doc, '#Archive#Phase%202', { decodeSubpath: true })).toBe(
+      archivePhase2.id,
+    );
 
     // Block ID (exact and case-insensitive)
     expect(resolveTopicBySubpath(doc, '^blk-parser')).toBe(parserNode.id);
@@ -97,16 +99,36 @@ describe('topicResolver (M4-a cursor-to-map & link subpath resolution)', () => {
     expect(resolveTopicBySubpath(doc, 'Does Not Exist')).toBeNull();
     expect(resolveTopicBySubpath(doc, '^missing-id')).toBeNull();
     expect(resolveTopicBySubpath(doc, '')).toBeNull();
+
+    // Literal %20 in heading names matches exact literal heading unless decodeSubpath: true (Codex #8f4c3a4b)
+    const percentHeadingDoc = parseOk('# Headings Root\n## Phase%20One\n## Phase One\n');
+    const percentHeading = [...percentHeadingDoc.nodes.values()].find(
+      (n) => n.titleRaw === 'Phase%20One',
+    );
+    const spaceHeading = [...percentHeadingDoc.nodes.values()].find(
+      (n) => n.titleRaw === 'Phase One',
+    );
+    expect(percentHeading && spaceHeading).toBeTruthy();
+    if (!percentHeading || !spaceHeading) return;
+    expect(resolveTopicBySubpath(percentHeadingDoc, 'Phase%20One')).toBe(percentHeading.id);
+    expect(resolveTopicBySubpath(percentHeadingDoc, 'Phase One')).toBe(spaceHeading.id);
+    expect(resolveTopicBySubpath(percentHeadingDoc, 'Phase%20One', { decodeSubpath: true })).toBe(
+      spaceHeading.id,
+    );
   });
 
-  it('preserves literal %20 in paths by default and decodes Markdown URLs only with decodePath: true, and collects ancestors', () => {
+  it('preserves literal %20 in paths and subpaths by default and decodes Markdown URLs only with decodePath: true, and collects ancestors', () => {
     expect(splitLinkTargetSubpath('Source%20X.md#Heading%201')).toEqual({
       pathPart: 'Source%20X.md',
       subpath: 'Heading%201',
     });
     expect(splitLinkTargetSubpath('My%20Note.md#Heading%201', { decodePath: true })).toEqual({
       pathPart: 'My Note.md',
-      subpath: 'Heading%201',
+      subpath: 'Heading 1',
+    });
+    expect(splitLinkTargetSubpath('Headings.md#Phase%2520One', { decodePath: true })).toEqual({
+      pathPart: 'Headings.md',
+      subpath: 'Phase%20One',
     });
     expect(splitLinkTargetSubpath('Source%2520X.md', { decodePath: true })).toEqual({
       pathPart: 'Source%20X.md',
