@@ -14,8 +14,12 @@ export interface EditingSession {
   readonly targetHadIdenticalSibling: boolean;
   /** Optional restored draft text to prefill into InlineEditor while keeping the original CAS guard. */
   readonly draftPrefillValue?: string;
-  /** Draft that was restored into this session; deleted once the commit succeeds. */
+  /** Draft that was restored into this session; deleted on commit ONLY if still at restoredDraftRevision. */
   readonly restoredDraftId?: string;
+  /** Monotonic DraftStore revision of `restoredDraftId` when this session began. */
+  readonly restoredDraftRevision?: number;
+  /** Monotonic DraftStore snapshot revision when this session began (protects newer drafts on commit). */
+  readonly draftSnapshotRevision?: number;
   readonly guard: PatchGuard;
 }
 
@@ -30,8 +34,12 @@ export interface NoteEditingSession {
   /** True if another sibling under the same parent already shared identical (titleRaw, ownRangeHash). */
   readonly targetHadIdenticalSibling: boolean;
   readonly initialNoteText: string;
-  /** Draft that was restored into this session; deleted once the commit succeeds. */
+  /** Draft that was restored into this session; deleted on commit ONLY if still at restoredDraftRevision. */
   readonly restoredDraftId?: string;
+  /** Monotonic DraftStore revision of `restoredDraftId` when this session began (or last rescued). */
+  readonly restoredDraftRevision?: number;
+  /** Monotonic DraftStore snapshot revision when this session began (or last rescued). */
+  readonly draftSnapshotRevision?: number;
   readonly guard: PatchGuard;
 }
 
@@ -54,6 +62,8 @@ export function createEditingSession(
   node: TopicNode,
   draftPrefillValue?: string,
   restoredDraftId?: string,
+  restoredDraftRevision?: number,
+  draftSnapshotRevision?: number,
 ): EditingSession {
   return {
     filePath,
@@ -64,6 +74,8 @@ export function createEditingSession(
     targetHadIdenticalSibling: hasIdenticalStructuralSibling(doc, node),
     draftPrefillValue,
     restoredDraftId,
+    restoredDraftRevision,
+    draftSnapshotRevision,
     guard: buildPatchGuard(doc, node),
   };
 }
@@ -73,6 +85,8 @@ export function createNoteEditingSession(
   doc: MindMapDocument,
   node: TopicNode,
   restoredDraftId?: string,
+  restoredDraftRevision?: number,
+  draftSnapshotRevision?: number,
 ): NoteEditingSession {
   return {
     filePath,
@@ -82,6 +96,8 @@ export function createNoteEditingSession(
     targetAncestorPath: buildAncestorPath(doc, node),
     targetHadIdenticalSibling: hasIdenticalStructuralSibling(doc, node),
     restoredDraftId,
+    restoredDraftRevision,
+    draftSnapshotRevision,
     initialNoteText: node.noteText ?? '',
     guard: buildPatchGuard(doc, node),
   };
