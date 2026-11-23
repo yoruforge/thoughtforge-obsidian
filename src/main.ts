@@ -218,8 +218,11 @@ export default class ThoughtForgePlugin extends Plugin {
         this.fileCoordinator?.renameHistoryPath(oldPath, abstractFile.path);
         void this.draftStore?.renameFilePath(oldPath, abstractFile.path);
         for (const leaf of this.app.workspace.getLeavesOfType(MINDMAP_VIEW_TYPE)) {
-          if (leaf.view instanceof MindMapView && leaf.view.file?.path === abstractFile.path) {
-            void leaf.view.reloadFromFile(abstractFile);
+          if (leaf.view instanceof MindMapView) {
+            leaf.view.renameHistoryPath(oldPath, abstractFile.path);
+            if (leaf.view.file?.path === abstractFile.path) {
+              void leaf.view.reloadFromFile(abstractFile);
+            }
           }
         }
       }),
@@ -229,6 +232,11 @@ export default class ThoughtForgePlugin extends Plugin {
       this.app.vault.on('delete', (abstractFile) => {
         if (abstractFile instanceof TFile && abstractFile.extension.toLowerCase() === 'md') {
           this.fileCoordinator?.clearHistory(abstractFile.path);
+          for (const leaf of this.app.workspace.getLeavesOfType(MINDMAP_VIEW_TYPE)) {
+            if (leaf.view instanceof MindMapView) {
+              leaf.view.removeHistoryPath(abstractFile.path);
+            }
+          }
         }
       }),
     );
@@ -261,25 +269,50 @@ export default class ThoughtForgePlugin extends Plugin {
     this.refreshAllViews();
   }
 
-  async openFileAsMindMap(file: TFile): Promise<void> {
+  async openFileAsMindMap(
+    file: TFile,
+    options?: {
+      readonly openMode?: 'split' | 'new-tab';
+      readonly reveal?: { readonly line?: number; readonly subpath?: string };
+    },
+  ): Promise<void> {
     if (file.extension.toLowerCase() !== 'md') {
       new Notice(this.messages.notices.selectMarkdownNote);
       return;
     }
     try {
+      const mode = options?.openMode ?? this.mindMapSettings.defaultOpenMode;
       const leaf =
-        this.mindMapSettings.defaultOpenMode === 'new-tab'
-          ? this.app.workspace.getLeaf('tab')
-          : this.app.workspace.getLeaf('split');
+        mode === 'new-tab' ? this.app.workspace.getLeaf('tab') : this.app.workspace.getLeaf('split');
       await leaf.setViewState({
         type: MINDMAP_VIEW_TYPE,
         state: { file: file.path },
         active: true,
       });
       this.app.workspace.revealLeaf(leaf);
+      if (options?.reveal && leaf.view instanceof MindMapView) {
+        leaf.view.revealTarget(options.reveal);
+      }
     } catch {
       new Notice(this.messages.notices.openMapFailed);
     }
+  }
+
+  async revealLineInMindMap(file: TFile, line: number): Promise<void> {
+    if (file.extension.toLowerCase() !== 'md') {
+      new Notice(this.messages.notices.selectMarkdownNote);
+      return;
+    }
+    const existingLeaf = this.app.workspace
+      .getLeavesOfType(MINDMAP_VIEW_TYPE)
+      .find((leaf) => leaf.view instanceof MindMapView && leaf.view.file?.path === file.path);
+    if (existingLeaf && existingLeaf.view instanceof MindMapView) {
+      this.app.workspace.setActiveLeaf(existingLeaf, { focus: true });
+      this.app.workspace.revealLeaf(existingLeaf);
+      existingLeaf.view.revealTarget({ line });
+      return;
+    }
+    await this.openFileAsMindMap(file, { reveal: { line } });
   }
 
   private refreshAllViews(): void {

@@ -35,6 +35,9 @@ function renderTitleWithTagPills(
   displayTitle: string,
   isVirtualRoot: boolean,
   isTaskDone: boolean,
+  activeTagFilter: string | undefined,
+  tagFilterTooltip: string,
+  onToggleTagFilter?: (tag: string) => void,
 ) {
   if (isVirtualRoot) {
     const label = displayTitle.length > 0 ? displayTitle : '(untitled)';
@@ -53,17 +56,44 @@ function renderTitleWithTagPills(
     return <span className={isTaskDone ? 'ito-node-title-done' : undefined}>{label}</span>;
   }
 
+  const normalizedActiveTag = activeTagFilter?.toLowerCase();
+
   return (
     <span className={isTaskDone ? 'ito-node-title-done' : undefined}>
-      {segments.map((seg, index) =>
-        seg.kind === 'tag' ? (
-          <span key={`${index}-${seg.text}`} className="ito-node-tag-pill">
+      {segments.map((seg, index) => {
+        if (seg.kind !== 'tag') {
+          return <span key={`${index}-txt`}>{seg.text}</span>;
+        }
+        const isActive =
+          normalizedActiveTag !== undefined && seg.text.toLowerCase() === normalizedActiveTag;
+        if (onToggleTagFilter) {
+          return (
+            <button
+              key={`${index}-${seg.text}`}
+              type="button"
+              className={`ito-node-tag-pill ${isActive ? 'ito-node-tag-pill-active' : ''}`}
+              title={`${tagFilterTooltip}: ${seg.text}`}
+              aria-pressed={isActive}
+              onPointerDown={(event) => event.stopPropagation()}
+              onDoubleClick={(event) => event.stopPropagation()}
+              onClick={(event) => {
+                event.stopPropagation();
+                onToggleTagFilter(seg.text);
+              }}
+            >
+              {seg.text}
+            </button>
+          );
+        }
+        return (
+          <span
+            key={`${index}-${seg.text}`}
+            className={`ito-node-tag-pill ${isActive ? 'ito-node-tag-pill-active' : ''}`}
+          >
             {seg.text}
           </span>
-        ) : (
-          <span key={`${index}-txt`}>{seg.text}</span>
-        ),
-      )}
+        );
+      })}
     </span>
   );
 }
@@ -76,6 +106,8 @@ export interface DomNodeLayerProps {
   readonly imeGuardWindowMs: number;
   readonly inlineEditorLabel: string;
   readonly toggleTaskAriaLabel: string;
+  readonly tagFilterTooltip: string;
+  readonly activeTagFilter?: string;
   readonly canEdit: boolean;
   readonly dimmedNodeIds: ReadonlySet<string>;
   readonly matchedNodeIds: ReadonlySet<string>;
@@ -102,6 +134,7 @@ export interface DomNodeLayerProps {
   readonly onCancelEdit: () => void;
   readonly onDiscardEdit: (unsavedValue: string) => void;
   readonly onToggleTask: (nodeId: string) => void;
+  readonly onToggleTagFilter?: (tag: string) => void;
   readonly onStartNodeDrag?: (
     nodeId: string,
     label: string,
@@ -119,6 +152,8 @@ export function DomNodeLayer({
   imeGuardWindowMs,
   inlineEditorLabel,
   toggleTaskAriaLabel,
+  tagFilterTooltip,
+  activeTagFilter,
   canEdit,
   dimmedNodeIds,
   matchedNodeIds,
@@ -140,6 +175,7 @@ export function DomNodeLayer({
   onCancelEdit,
   onDiscardEdit,
   onToggleTask,
+  onToggleTagFilter,
   onStartNodeDrag,
 }: DomNodeLayerProps) {
   const [hoveredNoteNodeId, setHoveredNoteNodeId] = useState<string | null>(null);
@@ -334,6 +370,9 @@ export function DomNodeLayer({
                     topic.displayTitle,
                     topic.kind === 'central-virtual',
                     isTaskDone,
+                    activeTagFilter,
+                    tagFilterTooltip,
+                    onToggleTagFilter,
                   )}
                 </span>
               </>

@@ -1,4 +1,4 @@
-import { Notice } from 'obsidian';
+import { MarkdownView, Notice } from 'obsidian';
 import type ThoughtForgePlugin from '../main';
 import { MindMapView } from './MindMapView';
 
@@ -17,6 +17,49 @@ export function registerPluginCommands(plugin: ThoughtForgePlugin): void {
       }
       if (!checking) {
         void plugin.openFileAsMindMap(activeFile);
+      }
+      return true;
+    },
+  });
+
+  plugin.addCommand({
+    id: 'reveal-cursor-in-mindmap',
+    name: plugin.messages.commands.revealCursorInMap,
+    checkCallback: (checking) => {
+      const mdView = plugin.app.workspace.getActiveViewOfType(MarkdownView);
+      const file = mdView?.file;
+      if (!mdView || !file || file.extension.toLowerCase() !== 'md') {
+        return false;
+      }
+      if (!checking) {
+        const cursorLine = mdView.editor.getCursor().line;
+        void plugin.revealLineInMindMap(file, cursorLine);
+      }
+      return true;
+    },
+  });
+
+  plugin.addCommand({
+    id: 'navigate-back',
+    name: plugin.messages.commands.navigateBack,
+    checkCallback: (checking) => {
+      const activeView = plugin.app.workspace.getActiveViewOfType(MindMapView);
+      if (!activeView || !activeView.canNavigateBack()) return false;
+      if (!checking) {
+        void activeView.navigateBack();
+      }
+      return true;
+    },
+  });
+
+  plugin.addCommand({
+    id: 'navigate-forward',
+    name: plugin.messages.commands.navigateForward,
+    checkCallback: (checking) => {
+      const activeView = plugin.app.workspace.getActiveViewOfType(MindMapView);
+      if (!activeView || !activeView.canNavigateForward()) return false;
+      if (!checking) {
+        void activeView.navigateForward();
       }
       return true;
     },
