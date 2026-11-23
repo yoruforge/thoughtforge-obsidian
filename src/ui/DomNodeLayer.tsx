@@ -1,4 +1,4 @@
-import type { CSSProperties, MouseEvent } from 'react';
+import type { CSSProperties, MouseEvent, MutableRefObject } from 'react';
 import type { LayoutNode, MindMapDocument, TopicLink } from '../core/model';
 import {
   getBranchColor,
@@ -6,7 +6,10 @@ import {
   type MapThemePalette,
 } from '../core/layout/theme';
 import type { EditingSession } from './editSession';
+import type { GuardableKeyEvent } from './imeGuard';
 import { InlineEditor } from './InlineEditor';
+
+const STANDARD_TASK_PREFIX_RE = /^\[([ xX])\][ \t]+$/;
 
 export interface DomNodeLayerProps {
   readonly document: MindMapDocument;
@@ -15,6 +18,8 @@ export interface DomNodeLayerProps {
   readonly editingSession: EditingSession | null;
   readonly imeGuardWindowMs: number;
   readonly inlineEditorLabel: string;
+  readonly toggleTaskAriaLabel: string;
+  readonly canEdit: boolean;
   readonly dimmedNodeIds: ReadonlySet<string>;
   readonly matchedNodeIds: ReadonlySet<string>;
   readonly effectiveCollapsedIds: ReadonlySet<string>;
@@ -26,8 +31,11 @@ export interface DomNodeLayerProps {
   readonly onOpenLink: (link: TopicLink, newTab: boolean) => void;
   readonly onStartEdit: (nodeId: string) => void;
   readonly onCommitEdit: (session: EditingSession, nextTitle: string) => void;
+  readonly onSplitEdit: (session: EditingSession, leftTitle: string, rightTitle: string) => void;
+  readonly inlineSplitTriggerRef?: MutableRefObject<((event: GuardableKeyEvent) => boolean) | null>;
   readonly onCancelEdit: () => void;
   readonly onDiscardEdit: (unsavedValue: string) => void;
+  readonly onToggleTask: (nodeId: string) => void;
 }
 
 export function DomNodeLayer({
@@ -37,6 +45,8 @@ export function DomNodeLayer({
   editingSession,
   imeGuardWindowMs,
   inlineEditorLabel,
+  toggleTaskAriaLabel,
+  canEdit,
   dimmedNodeIds,
   matchedNodeIds,
   effectiveCollapsedIds,
@@ -48,9 +58,14 @@ export function DomNodeLayer({
   onOpenLink,
   onStartEdit,
   onCommitEdit,
+  onSplitEdit,
+  inlineSplitTriggerRef,
   onCancelEdit,
   onDiscardEdit,
+  onToggleTask,
 }: DomNodeLayerProps) {
+  const isReadOnly = !canEdit || document.readOnlyReasons.length > 0;
+
   return (
     <div className="ito-node-layer" role="tree" aria-label="Mind map topics">
       {visibleLayoutNodes.map((ln) => {
@@ -109,6 +124,11 @@ export function DomNodeLayer({
           }
         };
 
+        const taskMatch =
+          topic.kind === 'list-item' ? STANDARD_TASK_PREFIX_RE.exec(topic.preservedPrefix) : null;
+        const isStandardTask = taskMatch !== null;
+        const isTaskDone = taskMatch?.[1] === 'x' || taskMatch?.[1] === 'X';
+
         const activeEditingSession =
           editingSession !== null && editingSession.nodeId === ln.id ? editingSession : null;
         const isEditing = activeEditingSession !== null;
@@ -150,15 +170,41 @@ export function DomNodeLayer({
                 imeGuardWindowMs={imeGuardWindowMs}
                 ariaLabel={inlineEditorLabel}
                 onCommit={(nextTitle) => onCommitEdit(activeEditingSession, nextTitle)}
+                onSplit={
+                  !isCenter
+                    ? (leftTitle, rightTitle) =>
+                        onSplitEdit(activeEditingSession, leftTitle, rightTitle)
+                    : undefined
+                }
+                splitTriggerRef={inlineSplitTriggerRef}
                 onCancel={onCancelEdit}
                 onDiscard={onDiscardEdit}
               />
             ) : (
               <span className="ito-node-title">
-                {topic.preservedPrefix.length > 0 && (
-                  <span className="ito-node-task-prefix">{topic.preservedPrefix}</span>
-                )}
-                {topic.displayTitle.length > 0 ? topic.displayTitle : '(untitled)'}
+                {topic.preservedPrefix.length > 0 &&
+                  (isStandardTask && !isReadOnly ? (
+                    <button
+                      type="button"
+                      className={`ito-node-task-toggle ${isTaskDone ? 'ito-node-task-done' : ''}`}
+                      aria-label={toggleTaskAriaLabel}
+                      aria-pressed={isTaskDone}
+                      onPointerDown={(event) => event.stopPropagation()}
+                      onDoubleClick={(event) => event.stopPropagation()}
+                      onClick={(event) => {
+                        event.stopPropagation();
+                        onSelectNode(ln.id);
+                        onToggleTask(ln.id);
+                      }}
+                    >
+                      {topic.preservedPrefix.trim()}
+                    </button>
+                  ) : (
+                    <span className="ito-node-task-prefix">{topic.preservedPrefix}</span>
+                  ))}
+                <span className={isTaskDone ? 'ito-node-title-done' : undefined}>
+                  {topic.displayTitle.length > 0 ? topic.displayTitle : '(untitled)'}
+                </span>
               </span>
             )}
 

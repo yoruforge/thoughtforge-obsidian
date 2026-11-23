@@ -3,6 +3,7 @@ import {
   useMemo,
   useRef,
   useState,
+  type MutableRefObject,
   type PointerEvent,
 } from 'react';
 import {
@@ -18,6 +19,7 @@ import type {
 } from '../core/model';
 import { DomNodeLayer } from './DomNodeLayer';
 import type { EditingSession } from './editSession';
+import type { GuardableKeyEvent } from './imeGuard';
 import { SvgEdgeLayer } from './SvgEdgeLayer';
 
 export interface ViewportSize {
@@ -33,6 +35,8 @@ export interface ViewportCanvasProps {
   readonly editingSession: EditingSession | null;
   readonly imeGuardWindowMs: number;
   readonly inlineEditorLabel: string;
+  readonly toggleTaskAriaLabel: string;
+  readonly canEdit: boolean;
   readonly dimmedNodeIds: ReadonlySet<string>;
   readonly matchedNodeIds: ReadonlySet<string>;
   readonly effectiveCollapsedIds: ReadonlySet<string>;
@@ -46,8 +50,11 @@ export interface ViewportCanvasProps {
   readonly onOpenLink: (link: TopicLink, newTab: boolean) => void;
   readonly onStartEdit: (nodeId: string) => void;
   readonly onCommitEdit: (session: EditingSession, nextTitle: string) => void;
+  readonly onSplitEdit: (session: EditingSession, leftTitle: string, rightTitle: string) => void;
+  readonly inlineSplitTriggerRef?: MutableRefObject<((event: GuardableKeyEvent) => boolean) | null>;
   readonly onCancelEdit: () => void;
   readonly onDiscardEdit: (unsavedValue: string) => void;
+  readonly onToggleTask: (nodeId: string) => void;
 }
 
 const MIN_ZOOM = 0.2;
@@ -65,6 +72,8 @@ export function ViewportCanvas({
   editingSession,
   imeGuardWindowMs,
   inlineEditorLabel,
+  toggleTaskAriaLabel,
+  canEdit,
   dimmedNodeIds,
   matchedNodeIds,
   effectiveCollapsedIds,
@@ -78,8 +87,11 @@ export function ViewportCanvas({
   onOpenLink,
   onStartEdit,
   onCommitEdit,
+  onSplitEdit,
+  inlineSplitTriggerRef,
   onCancelEdit,
   onDiscardEdit,
+  onToggleTask,
 }: ViewportCanvasProps) {
   const containerRef = useRef<HTMLDivElement | null>(null);
   const [viewportSize, setViewportSize] = useState<ViewportSize>({ width: 960, height: 640 });
@@ -219,6 +231,8 @@ export function ViewportCanvas({
           editingSession={editingSession}
           imeGuardWindowMs={imeGuardWindowMs}
           inlineEditorLabel={inlineEditorLabel}
+          toggleTaskAriaLabel={toggleTaskAriaLabel}
+          canEdit={canEdit}
           dimmedNodeIds={dimmedNodeIds}
           matchedNodeIds={matchedNodeIds}
           effectiveCollapsedIds={effectiveCollapsedIds}
@@ -230,8 +244,11 @@ export function ViewportCanvas({
           onOpenLink={onOpenLink}
           onStartEdit={onStartEdit}
           onCommitEdit={onCommitEdit}
+          onSplitEdit={onSplitEdit}
+          inlineSplitTriggerRef={inlineSplitTriggerRef}
           onCancelEdit={onCancelEdit}
           onDiscardEdit={onDiscardEdit}
+          onToggleTask={onToggleTask}
         />
       </div>
     </div>

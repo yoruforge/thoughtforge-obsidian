@@ -41,5 +41,44 @@ export function registerPluginCommands(plugin: ThoughtForgePlugin): void {
     },
   });
 
-  // TODO: [M2 コマンド登録] - Classic Keymap の全編集・閲覧操作（子/兄弟/新親/削除/Undo/Redo等）を既定ホットキーなしでコマンドパレットへ登録する
+  plugin.addCommand({
+    id: 'undo',
+    name: plugin.messages.commands.undo,
+    checkCallback: (checking) => {
+      const activeView = plugin.app.workspace.getActiveViewOfType(MindMapView);
+      if (!activeView) return false;
+      if (!checking) {
+        void activeView.triggerUndo();
+      }
+      return true;
+    },
+  });
+
+  plugin.addCommand({
+    id: 'redo',
+    name: plugin.messages.commands.redo,
+    checkCallback: (checking) => {
+      const activeView = plugin.app.workspace.getActiveViewOfType(MindMapView);
+      if (!activeView) return false;
+      if (!checking) {
+        void activeView.triggerRedo();
+      }
+      return true;
+    },
+  });
+
+  plugin.addCommand({
+    id: 'toggle-task',
+    name: plugin.messages.commands.toggleTask,
+    checkCallback: (checking) => {
+      const activeView = plugin.app.workspace.getActiveViewOfType(MindMapView);
+      if (!activeView) return false;
+      if (!checking) {
+        void activeView.triggerToggleSelectedTask();
+      }
+      return true;
+    },
+  });
+
+  // TODO: [M2-c コマンド登録] - 残りの編集操作（トピックノート直接編集・枝コピペ等）を既定ホットキーなしでコマンドパレットへ登録する
 }

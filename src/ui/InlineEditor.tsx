@@ -1,11 +1,13 @@
-import { useEffect, useRef, useState, type KeyboardEvent } from 'react';
-import { decideInlineEditorKeyAction, ImeGuard } from './imeGuard';
+import { useEffect, useRef, useState, type KeyboardEvent, type MutableRefObject } from 'react';
+import { decideInlineEditorKeyAction, ImeGuard, type GuardableKeyEvent } from './imeGuard';
 
 export interface InlineEditorProps {
   readonly initialValue: string;
   readonly imeGuardWindowMs: number;
   readonly ariaLabel: string;
   readonly onCommit: (nextValue: string) => void;
+  readonly onSplit?: (leftValue: string, rightValue: string) => void;
+  readonly splitTriggerRef?: MutableRefObject<((event: GuardableKeyEvent) => boolean) | null>;
   readonly onCancel: () => void;
   /** Called on unmount when the editor closed without commit/cancel and the text was changed. */
   readonly onDiscard?: (unsavedValue: string) => void;
@@ -16,6 +18,8 @@ export function InlineEditor({
   imeGuardWindowMs,
   ariaLabel,
   onCommit,
+  onSplit,
+  splitTriggerRef,
   onCancel,
   onDiscard,
 }: InlineEditorProps) {
@@ -55,12 +59,63 @@ export function InlineEditor({
     onCommit(nextValue);
   };
 
+  const splitValue = (leftValue: string, rightValue: string): void => {
+    if (settledRef.current || !onSplit) return;
+    settledRef.current = true;
+    imeGuardRef.current.reset();
+    onSplit(leftValue, rightValue);
+  };
+
   const cancelEdit = (): void => {
     if (settledRef.current) return;
     settledRef.current = true;
     imeGuardRef.current.reset();
     onCancel();
   };
+
+  const attemptSplit = (event: GuardableKeyEvent): boolean => {
+    const action = decideInlineEditorKeyAction(
+      imeGuardRef.current,
+      { ...event, key: 'Enter', metaKey: true },
+      performance.now(),
+      imeGuardWindowMs,
+    );
+    if (action === 'pass-to-ime') {
+      return false;
+    }
+    if (action === 'suppress-default') {
+      return true;
+    }
+    if (action !== 'split') {
+      return false;
+    }
+    const input = inputRef.current;
+    const currentVal = valueRef.current;
+    const start = input?.selectionStart ?? currentVal.length;
+    const end = input?.selectionEnd ?? currentVal.length;
+    const left = currentVal.slice(0, start).trim();
+    const right = currentVal.slice(end).trim();
+    if (left.length > 0 && right.length > 0 && onSplit) {
+      splitValue(left, right);
+      return true;
+    }
+    if (left.length > 0 && right.length === 0) {
+      commitValue(currentVal);
+      return true;
+    }
+    return true;
+  };
+
+  const attemptSplitRef = useRef(attemptSplit);
+  attemptSplitRef.current = attemptSplit;
+
+  useEffect(() => {
+    if (!splitTriggerRef) return;
+    splitTriggerRef.current = (event: GuardableKeyEvent) => attemptSplitRef.current(event);
+    return () => {
+      splitTriggerRef.current = null;
+    };
+  }, [splitTriggerRef]);
 
   const handleKeyDown = (event: KeyboardEvent<HTMLInputElement>): void => {
     event.stopPropagation();
@@ -74,6 +129,11 @@ export function InlineEditor({
 
     if (action === 'suppress-default') {
       event.preventDefault();
+      return;
+    }
+    if (action === 'split') {
+      event.preventDefault();
+      attemptSplit(event.nativeEvent);
       return;
     }
     if (action === 'commit') {

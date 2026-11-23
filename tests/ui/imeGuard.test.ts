@@ -62,8 +62,18 @@ describe('ImeGuard', () => {
     );
     expect(decideInlineEditorKeyAction(guard, { key: 'Escape' }, 1100, 300)).toBe('cancel');
 
-    // Outside guard window: Tab and Enter commit normally
+    // Outside guard window: Tab and Enter commit normally, Mod+Enter triggers split
     expect(decideInlineEditorKeyAction(guard, { key: 'Tab' }, 1301, 300)).toBe('commit');
     expect(decideInlineEditorKeyAction(guard, { key: 'Enter' }, 1301, 300)).toBe('commit');
+    expect(
+      decideInlineEditorKeyAction(guard, { key: 'Enter', metaKey: true }, 1301, 300),
+    ).toBe('split');
+    expect(
+      decideInlineEditorKeyAction(guard, { key: 'Enter', ctrlKey: true }, 1301, 300),
+    ).toBe('split');
+    // Inside guard window: Mod+Enter is still suppressed
+    expect(
+      decideInlineEditorKeyAction(guard, { key: 'Enter', metaKey: true }, 1100, 300),
+    ).toBe('suppress-default');
   });
 });

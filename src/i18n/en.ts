@@ -3,6 +3,9 @@ export const en = {
   commands: {
     openAsMap: 'Open current note as mind map',
     openMarkdownBeside: 'Open Markdown beside mind map',
+    undo: 'Undo last mind map edit',
+    redo: 'Redo last mind map edit',
+    toggleTask: 'Toggle task checkbox on selected topic',
   },
   toolbar: {
     zoomIn: 'Zoom in',
@@ -23,7 +26,7 @@ export const en = {
     topicsCount: 'Topics',
     readOnlyBadge: 'Read-only',
     m1PreviewMode: 'Preview mode (M1 — editing arrives in M2)',
-    m2EditReady: 'Edit ready (F2: rename / Tab: child / Enter: sibling)',
+    m2EditReady: 'Edit ready (F2: rename / Tab: child / Enter: sibling / Del: delete / ⌘Z: undo)',
     largeMapWarning: 'Large map (3,001–5,000 topics): performance not guaranteed',
     filterMatches: 'Matches',
     noMatches: 'No matching topics',
@@ -51,7 +54,8 @@ export const en = {
     close: 'Close',
     noteHeading: 'Topic note',
     noteEmpty: 'No topic note attached.',
-    noteEditPlaceholder: 'Direct note editing will be enabled in M2 (Cmd/Ctrl+Enter to save).',
+    noteEditPlaceholder:
+      'Direct note editing with draft protection will be enabled in M2-c (Cmd/Ctrl+Enter to save).',
     unmappedHeading: 'Preserved non-map blocks',
     linksHeading: 'Links in title',
     jumpToSource: 'Jump to Markdown line',
@@ -79,6 +83,7 @@ export const en = {
   edit: {
     newTopicTitle: 'New topic',
     inlineEditorLabel: 'Edit topic title',
+    toggleTaskAriaLabel: 'Toggle task checkbox',
     readOnlyRejected: 'This note is read-only and cannot be edited from the map.',
     staleTarget: 'The note changed externally. Reloaded the latest content — please retry.',
     newlineRejected: 'Topic titles must be a single line.',
@@ -88,6 +93,21 @@ export const en = {
     unsavedInputDiscarded:
       'The note changed while you were typing, so the title was not saved. Your input: ',
     rootSiblingRejected: 'Cannot add a sibling to the central topic. Press Tab to add a child.',
+    cannotModifyRoot: 'This structural operation cannot be applied to the central topic.',
+    notATask: 'Only standard Markdown task list items ([ ] / [x]) can be toggled.',
+    headingLevelOutOfRange: 'Cannot apply edit because heading depth would exceed Markdown H1–H6 limits.',
+    mixedHeadingListRejected:
+      'Cannot move or convert across heading and list item boundaries.',
+    indentSensitiveRejected:
+      'Edit cancelled because shifting indentation could alter a preserved block (code, table, callout, etc.).',
+    cannotPromoteWithNoteOrUnmapped:
+      'Cannot delete only this topic while promoting children because it contains a note or preserved block.',
+    unmappedDeleteConfirmTitle: 'Delete branch with preserved blocks?',
+    unmappedDeleteConfirmBody:
+      'This branch contains preserved Markdown blocks (such as code blocks, tables, or callouts). Delete the entire branch? You can undo this with Cmd/Ctrl+Z.',
+    unmappedDeleteConfirmCancel: 'Cancel',
+    unmappedDeleteConfirmDelete: 'Delete branch',
+    undoStale: 'Cannot undo/redo because the note was modified outside the mind map.',
     editorDirty: 'Save unsaved changes in the open Markdown editor before editing on the map.',
     editorUnknown: 'Could not verify the open Markdown editor state. Save the note and retry.',
     invariantRejected: 'Edit cancelled to protect Markdown structure and preserved blocks.',

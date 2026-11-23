@@ -68,3 +68,29 @@ export function buildCommitRenameCommand(
     newTitle: trimmed,
   };
 }
+
+/**
+ * Builds an atomic splitSibling command from the session's original CAS guard.
+ * Returns null if the file changed or either split half is empty.
+ */
+export function buildSplitSiblingCommand(
+  session: EditingSession,
+  currentFilePath: string,
+  leftTitle: string,
+  rightTitle: string,
+): Extract<SemanticCommand, { readonly type: 'splitSibling' }> | null {
+  if (session.filePath !== currentFilePath) {
+    return null;
+  }
+  const left = leftTitle.trim();
+  const right = rightTitle.trim();
+  if (left.length === 0 || right.length === 0) {
+    return null;
+  }
+  return {
+    type: 'splitSibling',
+    guard: session.guard,
+    leftTitle: left,
+    rightTitle: right,
+  };
+}

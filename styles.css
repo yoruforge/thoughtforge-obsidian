@@ -185,6 +185,49 @@
   margin-right: 4px;
 }
 
+.ito-node-task-toggle {
+  font-family: var(--font-monospace);
+  font-size: 0.9em;
+  line-height: 1;
+  padding: 1px 4px;
+  margin-right: 5px;
+  border-radius: 3px;
+  border: 1px solid var(--background-modifier-border);
+  background: var(--background-secondary);
+  color: inherit;
+  cursor: pointer;
+}
+
+.ito-node-task-toggle:hover {
+  border-color: var(--interactive-accent);
+}
+
+.ito-node-task-done {
+  opacity: 0.72;
+}
+
+.ito-node-title-done {
+  text-decoration: line-through;
+  opacity: 0.7;
+}
+
+.ito-confirm-modal-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+  margin-top: 16px;
+}
+
+.ito-btn-danger {
+  background: #dc2626;
+  color: #ffffff;
+  border-color: #b91c1c;
+}
+
+.ito-btn-danger:hover {
+  background: #b91c1c;
+}
+
 .ito-node-badges {
   display: inline-flex;
   align-items: center;

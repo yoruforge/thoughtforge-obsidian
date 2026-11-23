@@ -14,12 +14,14 @@ import { parseMarkdownToMap } from '../core/parser';
 import type { SemanticCommand } from '../core/patch/commands';
 import type { Messages } from '../i18n';
 import type { CommandDispatchOutcome, SyncRejectCode } from '../sync/ports';
-import { MindMapApp } from '../ui/App';
+import { MindMapApp, type MindMapActionTriggers } from '../ui/App';
 import type ThoughtForgePlugin from '../main';
+import { promptConfirmDeleteBranch } from './ConfirmModal';
 import {
   isStaleAsyncViewUpdate,
   shouldSkipReloadRender,
-  shouldTriggerScopeF2,
+  shouldTriggerMindMapScopeShortcut,
+  shouldTriggerScopeInlineSplit,
   type RenderedFileSnapshot,
 } from './viewGuard';
 
@@ -29,12 +31,13 @@ function formatRejectMessage(
   messages: Messages,
   rejectCode: SyncRejectCode | undefined,
   fallbackReason: string | undefined,
+  isHistoryAction = false,
 ): string {
   switch (rejectCode) {
     case 'read-only-document':
       return messages.edit.readOnlyRejected;
     case 'stale-target':
-      return messages.edit.staleTarget;
+      return isHistoryAction ? messages.edit.undoStale : messages.edit.staleTarget;
     case 'newline-in-title':
       return messages.edit.newlineRejected;
     case 'empty-title':
@@ -43,6 +46,18 @@ function formatRejectMessage(
       return messages.edit.blockSyntaxInTitleRejected;
     case 'cannot-insert-sibling-for-root':
       return messages.edit.rootSiblingRejected;
+    case 'cannot-modify-root':
+      return messages.edit.cannotModifyRoot;
+    case 'not-a-task':
+      return messages.edit.notATask;
+    case 'heading-level-out-of-range':
+      return messages.edit.headingLevelOutOfRange;
+    case 'mixed-heading-list-conversion':
+      return messages.edit.mixedHeadingListRejected;
+    case 'indent-sensitive-unmapped-block':
+      return messages.edit.indentSensitiveRejected;
+    case 'cannot-promote-with-note-or-unmapped':
+      return messages.edit.cannotPromoteWithNoteOrUnmapped;
     case 'editor-dirty':
       return messages.edit.editorDirty;
     case 'editor-state-unknown':
@@ -55,11 +70,7 @@ function formatRejectMessage(
       return messages.edit.ioError;
     case 'invariant-check-failed':
     case 'invalid-note-block-syntax':
-    case 'heading-level-out-of-range':
-    case 'mixed-heading-list-conversion':
-    case 'indent-sensitive-unmapped-block':
     case 'unmapped-delete-requires-confirmation':
-    case 'cannot-promote-with-note-or-unmapped':
       return messages.edit.invariantRejected;
     default:
       return fallbackReason ?? messages.edit.invariantRejected;
@@ -99,6 +110,12 @@ function isEditableDomTarget(target: unknown): boolean {
   return tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT';
 }
 
+function hasCssClass(target: unknown, className: string): boolean {
+  if (typeof target !== 'object' || target === null) return false;
+  const candidate = target as { readonly classList?: { readonly contains?: (cls: string) => boolean } };
+  return typeof candidate.classList?.contains === 'function' && candidate.classList.contains(className);
+}
+
 function isNodeInsideContainer(container: HTMLElement, target: unknown): boolean {
   if (typeof target !== 'object' || target === null) return false;
   if (target instanceof Node) {
@@ -121,9 +138,9 @@ export class MindMapView extends FileView {
   private parseResult: ParseResult | null = null;
   private lastRenderedSnapshot: RenderedFileSnapshot | null = null;
   private loadSequence = 0;
-  private editSelectedTrigger: (() => boolean) | null = null;
-  private readonly registerEditSelectedTrigger = (trigger: (() => boolean) | null): void => {
-    this.editSelectedTrigger = trigger;
+  private actionTriggers: MindMapActionTriggers | null = null;
+  private readonly registerActionTriggers = (triggers: MindMapActionTriggers | null): void => {
+    this.actionTriggers = triggers;
   };
 
   constructor(
@@ -131,28 +148,62 @@ export class MindMapView extends FileView {
     private readonly plugin: ThoughtForgePlugin,
   ) {
     super(leaf);
-    // Register a view-local Scope so F2 opens inline topic editing when this
-    // MindMapView is active instead of being intercepted by Obsidian's global
-    // "Edit file title" hotkey.
+    // Register a view-local Scope so F2 and Undo/Redo are handled by MindMapView
+    // when active on the canvas without colliding with Obsidian's global hotkeys
+    // or interfering with native editing inside text inputs.
     this.scope = new Scope(this.plugin.app.scope);
     this.scope.register([], 'F2', (evt) => {
-      const ownerDoc = this.contentEl.ownerDocument;
-      const activeEl = ownerDoc.activeElement;
-      const shouldHandle = shouldTriggerScopeF2(evt, {
-        targetIsEditable: isEditableDomTarget(evt.target),
-        activeElementIsEditable: isEditableDomTarget(activeEl),
-        targetInsideMap: isNodeInsideContainer(this.contentEl, evt.target),
-        activeElementInsideMap: isNodeInsideContainer(this.contentEl, activeEl),
-        activeElementIsBody: activeEl === null || activeEl === ownerDoc.body,
-      });
-      if (!shouldHandle) {
-        return undefined;
-      }
-      if (this.editSelectedTrigger !== null && this.editSelectedTrigger()) {
-        return false;
-      }
-      return undefined;
+      if (!this.canHandleScopeShortcut(evt)) return undefined;
+      return this.actionTriggers?.editSelected() ? false : undefined;
     });
+    this.scope.register(['Mod'], 'z', (evt) => {
+      if (evt.shiftKey || !this.canHandleScopeShortcut(evt)) return undefined;
+      return this.actionTriggers?.undo() ? false : undefined;
+    });
+    this.scope.register(['Mod', 'Shift'], 'z', (evt) => {
+      if (!this.canHandleScopeShortcut(evt)) return undefined;
+      return this.actionTriggers?.redo() ? false : undefined;
+    });
+    this.scope.register(['Ctrl'], 'y', (evt) => {
+      if (evt.metaKey || evt.shiftKey || !this.canHandleScopeShortcut(evt)) return undefined;
+      return this.actionTriggers?.redo() ? false : undefined;
+    });
+    this.scope.register(['Mod'], 'Enter', (evt) => {
+      if (evt.shiftKey || evt.altKey) return undefined;
+      const activeEl = this.contentEl.ownerDocument.activeElement;
+      const activeIsInlineEditor =
+        hasCssClass(activeEl, 'ito-inline-editor') &&
+        isNodeInsideContainer(this.contentEl, activeEl);
+      if (shouldTriggerScopeInlineSplit(evt, activeIsInlineEditor)) {
+        return this.actionTriggers?.splitEditing(evt) ? false : undefined;
+      }
+      if (!this.canHandleScopeShortcut(evt)) return undefined;
+      return this.actionTriggers?.editSelected() ? false : undefined;
+    });
+  }
+
+  private canHandleScopeShortcut(evt: KeyboardEvent): boolean {
+    const ownerDoc = this.contentEl.ownerDocument;
+    const activeEl = ownerDoc.activeElement;
+    return shouldTriggerMindMapScopeShortcut(evt, {
+      targetIsEditable: isEditableDomTarget(evt.target),
+      activeElementIsEditable: isEditableDomTarget(activeEl),
+      targetInsideMap: isNodeInsideContainer(this.contentEl, evt.target),
+      activeElementInsideMap: isNodeInsideContainer(this.contentEl, activeEl),
+      activeElementIsBody: activeEl === null || activeEl === ownerDoc.body,
+    });
+  }
+
+  triggerUndo(): void {
+    this.actionTriggers?.undo();
+  }
+
+  triggerRedo(): void {
+    this.actionTriggers?.redo();
+  }
+
+  triggerToggleSelectedTask(): void {
+    this.actionTriggers?.toggleSelectedTask();
   }
 
   getViewType(): string {
@@ -214,6 +265,62 @@ export class MindMapView extends FileView {
       return outcome;
     }
 
+    if (
+      !outcome.accepted &&
+      outcome.rejectCode === 'unmapped-delete-requires-confirmation' &&
+      command.type === 'deleteBranch' &&
+      command.confirmedUnmapped !== true
+    ) {
+      const confirmed = await promptConfirmDeleteBranch(this.app, {
+        title: this.plugin.messages.edit.unmappedDeleteConfirmTitle,
+        body: this.plugin.messages.edit.unmappedDeleteConfirmBody,
+        cancelLabel: this.plugin.messages.edit.unmappedDeleteConfirmCancel,
+        confirmLabel: this.plugin.messages.edit.unmappedDeleteConfirmDelete,
+      });
+      if (!confirmed) {
+        return { accepted: false, rejectCode: 'boundary-no-op', reason: 'Deletion cancelled.' };
+      }
+      if (isStaleAsyncViewUpdate(targetPath, seq, this.file?.path, this.loadSequence)) {
+        return { accepted: false, rejectCode: 'stale-target', reason: 'View changed during confirmation.' };
+      }
+      return this.dispatchCommand({ ...command, confirmedUnmapped: true });
+    }
+
+    this.applyOutcomeToView(file, targetPath, targetBasename, outcome, false);
+    return outcome;
+  }
+
+  private async dispatchHistory(direction: 'undo' | 'redo'): Promise<CommandDispatchOutcome> {
+    const file = this.file;
+    if (!file) {
+      return { accepted: false, rejectCode: 'io-error', reason: 'No active file.' };
+    }
+
+    const targetPath = file.path;
+    const targetBasename = file.basename;
+    const seq = this.loadSequence;
+    const coordinator = this.plugin.getFileCoordinator();
+
+    const outcome =
+      direction === 'undo'
+        ? await coordinator.undoForFile(targetPath, targetBasename)
+        : await coordinator.redoForFile(targetPath, targetBasename);
+
+    if (isStaleAsyncViewUpdate(targetPath, seq, this.file?.path, this.loadSequence)) {
+      return outcome;
+    }
+
+    this.applyOutcomeToView(file, targetPath, targetBasename, outcome, true);
+    return outcome;
+  }
+
+  private applyOutcomeToView(
+    file: TFile,
+    targetPath: string,
+    targetBasename: string,
+    outcome: CommandDispatchOutcome,
+    isHistoryAction: boolean,
+  ): void {
     if (outcome.accepted && outcome.nextDocument !== undefined) {
       this.parseResult = { status: 'ok', document: outcome.nextDocument };
       this.lastRenderedSnapshot =
@@ -221,14 +328,23 @@ export class MindMapView extends FileView {
           ? { path: targetPath, basename: targetBasename, rawText: outcome.nextRawText }
           : null;
       this.renderApp();
-    } else if (!outcome.accepted) {
-      new Notice(formatRejectMessage(this.plugin.messages, outcome.rejectCode, outcome.reason));
-      if (outcome.rejectCode === 'stale-target') {
-        void this.reloadFromFile(file);
-      }
+      return;
     }
 
-    return outcome;
+    if (
+      outcome.rejectCode === 'boundary-no-op' ||
+      outcome.rejectCode === 'nothing-to-undo' ||
+      outcome.rejectCode === 'nothing-to-redo'
+    ) {
+      return;
+    }
+
+    new Notice(
+      formatRejectMessage(this.plugin.messages, outcome.rejectCode, outcome.reason, isHistoryAction),
+    );
+    if (outcome.rejectCode === 'stale-target') {
+      void this.reloadFromFile(file);
+    }
   }
 
   refreshAppearance(): void {
@@ -239,7 +355,7 @@ export class MindMapView extends FileView {
     this.loadSequence += 1;
     this.parseResult = null;
     this.lastRenderedSnapshot = null;
-    this.editSelectedTrigger = null;
+    this.actionTriggers = null;
     this.unmountReact();
   }
 
@@ -247,7 +363,7 @@ export class MindMapView extends FileView {
     this.loadSequence += 1;
     this.parseResult = null;
     this.lastRenderedSnapshot = null;
-    this.editSelectedTrigger = null;
+    this.actionTriggers = null;
     this.unmountReact();
   }
 
@@ -283,7 +399,9 @@ export class MindMapView extends FileView {
           void this.handleOpenLink(link, newTab);
         },
         onDispatchCommand: (command: SemanticCommand) => this.dispatchCommand(command),
-        onRegisterEditSelectedTrigger: this.registerEditSelectedTrigger,
+        onUndo: () => this.dispatchHistory('undo'),
+        onRedo: () => this.dispatchHistory('redo'),
+        onRegisterActionTriggers: this.registerActionTriggers,
         onNotify: (message: string) => {
           new Notice(message, 15000);
         },

@@ -265,8 +265,9 @@ describe('M2-a core patch engine', () => {
     if (!stale.ok) expect(stale.reason).toBe('stale-target');
 
     const unsupported = planAndValidatePatch(md, doc, 'Test', {
-      type: 'deleteBranch',
+      type: 'updateNote',
       guard: guardFor(doc, child),
+      newNoteBody: 'Deferred to M2-c',
     });
     expect(unsupported.ok).toBe(false);
     if (!unsupported.ok) expect(unsupported.reason).toBe('unsupported-command');
@@ -359,5 +360,337 @@ describe('M2-a core patch engine', () => {
     });
     expect(renamed.ok).toBe(true);
     if (renamed.ok) expect(renamed.nextRawText).toBe('# R\n## 1. Overview\n- a\n');
+  });
+});
+
+describe('M2-b structural edits, split, and task toggle', () => {
+  it('deletes a branch cleanly (with/without trailing newline) and requires confirmation for unmapped blocks', () => {
+    const mdNoEof = '# Root\n- A\n  - A1\n- B';
+    const doc = parseOk(mdNoEof);
+    const nodeA = findNode(doc, 'A');
+
+    const delA = planAndValidatePatch(mdNoEof, doc, 'Test', {
+      type: 'deleteBranch',
+      guard: guardFor(doc, nodeA),
+    });
+    expect(delA.ok).toBe(true);
+    if (!delA.ok) return;
+    expect(delA.nextRawText).toBe('# Root\n- B');
+    expect(delA.nextDocument.nodes.get(delA.focusNodeId)?.titleRaw).toBe('B');
+
+    // Deleting last line without trailing newline must not leave a trailing newline
+    const nodeB = findNode(delA.nextDocument, 'B');
+    const delB = planAndValidatePatch(delA.nextRawText, delA.nextDocument, 'Test', {
+      type: 'deleteBranch',
+      guard: guardFor(delA.nextDocument, nodeB),
+    });
+    expect(delB.ok).toBe(true);
+    if (!delB.ok) return;
+    expect(delB.nextRawText).toBe('# Root');
+    expect(delB.focusNodeId).toBe(delB.nextDocument.rootId);
+
+    // Branch with unmapped block requires confirmation, then preserves other unmapped blocks
+    const mdUnmapped = [
+      '# Root',
+      '## Keep',
+      '> [!note] Survivor',
+      '> intact',
+      '## Remove',
+      '```ts',
+      'const gone = true;',
+      '```',
+      '',
+    ].join('\n');
+    const docU = parseOk(mdUnmapped);
+    const removeNode = findNode(docU, 'Remove');
+
+    const unconfirmed = planAndValidatePatch(mdUnmapped, docU, 'Test', {
+      type: 'deleteBranch',
+      guard: guardFor(docU, removeNode),
+    });
+    expect(unconfirmed.ok).toBe(false);
+    if (!unconfirmed.ok) expect(unconfirmed.reason).toBe('unmapped-delete-requires-confirmation');
+
+    const confirmed = planAndValidatePatch(mdUnmapped, docU, 'Test', {
+      type: 'deleteBranch',
+      guard: guardFor(docU, removeNode),
+      confirmedUnmapped: true,
+    });
+    expect(confirmed.ok).toBe(true);
+    if (!confirmed.ok) return;
+    expect(confirmed.nextRawText).toBe(['# Root', '## Keep', '> [!note] Survivor', '> intact', ''].join('\n'));
+    expect(confirmed.nextDocument.nodes.get(confirmed.focusNodeId)?.titleRaw).toBe('Keep');
+
+    // Cannot delete root
+    const root = docU.nodes.get(docU.rootId);
+    if (!root) return;
+    const delRoot = planAndValidatePatch(mdUnmapped, docU, 'Test', {
+      type: 'deleteBranch',
+      guard: guardFor(docU, root),
+    });
+    expect(delRoot.ok).toBe(false);
+    if (!delRoot.ok) expect(delRoot.reason).toBe('cannot-modify-root');
+  });
+
+  it('deletes a node while promoting children (headings, unordered lists, ordered lists) and blocks unsafe promotions', () => {
+    // 1. Ordered list 3-space indent promotion
+    const orderedMd = ['# Root', '1. Parent', '   1. Child 1', '      1. Grandchild', '   2. Child 2', ''].join('\n');
+    const orderedDoc = parseOk(orderedMd);
+    const parent = findNode(orderedDoc, 'Parent');
+    const promoted = planAndValidatePatch(orderedMd, orderedDoc, 'Test', {
+      type: 'deleteNodeKeepChildren',
+      guard: guardFor(orderedDoc, parent),
+    });
+    expect(promoted.ok).toBe(true);
+    if (!promoted.ok) return;
+    expect(promoted.nextRawText).toBe(
+      ['# Root', '1. Child 1', '   1. Grandchild', '2. Child 2', ''].join('\n'),
+    );
+    expect(promoted.nextDocument.nodes.get(promoted.focusNodeId)?.titleRaw).toBe('Child 1');
+
+    // 2. Heading promotion shifts heading children up by 1 level
+    const headingMd = ['# Root', '## Wrapper', '### Sub A', '#### Deep A', '### Sub B', ''].join('\n');
+    const headingDoc = parseOk(headingMd);
+    const wrapper = findNode(headingDoc, 'Wrapper');
+    const promotedHeading = planAndValidatePatch(headingMd, headingDoc, 'Test', {
+      type: 'deleteNodeKeepChildren',
+      guard: guardFor(headingDoc, wrapper),
+    });
+    expect(promotedHeading.ok).toBe(true);
+    if (!promotedHeading.ok) return;
+    expect(promotedHeading.nextRawText).toBe(
+      ['# Root', '## Sub A', '### Deep A', '## Sub B', ''].join('\n'),
+    );
+
+    // 3. Reject when target owns a topic note
+    const withNoteMd = '# Root\n- Parent\n  Note body\n  - Child\n';
+    const withNoteDoc = parseOk(withNoteMd);
+    const noteParent = findNode(withNoteDoc, 'Parent');
+    const rejNote = planAndValidatePatch(withNoteMd, withNoteDoc, 'Test', {
+      type: 'deleteNodeKeepChildren',
+      guard: guardFor(withNoteDoc, noteParent),
+    });
+    expect(rejNote.ok).toBe(false);
+    if (!rejNote.ok) expect(rejNote.reason).toBe('cannot-promote-with-note-or-unmapped');
+
+    // 4. Reject when child subtree has indent-sensitive unmapped block
+    const withCodeMd = ['# Root', '- Parent', '  - Child', '    ```js', '    1 + 1', '    ```', ''].join('\n');
+    const withCodeDoc = parseOk(withCodeMd);
+    const codeParent = findNode(withCodeDoc, 'Parent');
+    const rejCode = planAndValidatePatch(withCodeMd, withCodeDoc, 'Test', {
+      type: 'deleteNodeKeepChildren',
+      guard: guardFor(withCodeDoc, codeParent),
+    });
+    expect(rejCode.ok).toBe(false);
+    if (!rejCode.ok) expect(rejCode.reason).toBe('indent-sensitive-unmapped-block');
+  });
+
+  it('inserts a new parent above headings and lists while guarding H6 overflow and indent-sensitive blocks', () => {
+    // 1. Heading wrap
+    const headingMd = '# Root\n## Branch\n### Child\n- Leaf\n';
+    const headingDoc = parseOk(headingMd);
+    const branch = findNode(headingDoc, 'Branch');
+    const wrappedH = planAndValidatePatch(headingMd, headingDoc, 'Test', {
+      type: 'insertParent',
+      guard: guardFor(headingDoc, branch),
+      parentTitle: 'Group',
+    });
+    expect(wrappedH.ok).toBe(true);
+    if (!wrappedH.ok) return;
+    expect(wrappedH.nextRawText).toBe('# Root\n## Group\n### Branch\n#### Child\n- Leaf\n');
+    expect(wrappedH.nextDocument.nodes.get(wrappedH.focusNodeId)?.titleRaw).toBe('Group');
+
+    // 2. Reject H6 overflow
+    const h6Md = '# Root\n##### H5\n###### H6\n';
+    const h6Doc = parseOk(h6Md);
+    const h5 = findNode(h6Doc, 'H5');
+    const rejH6 = planAndValidatePatch(h6Md, h6Doc, 'Test', {
+      type: 'insertParent',
+      guard: guardFor(h6Doc, h5),
+      parentTitle: 'Too Deep',
+    });
+    expect(rejH6.ok).toBe(false);
+    if (!rejH6.ok) expect(rejH6.reason).toBe('heading-level-out-of-range');
+
+    // 3. Ordered list wrap uses CommonMark 3-space child indent
+    const orderedMd = '# Root\n1. Step\n   1. Substep\n';
+    const orderedDoc = parseOk(orderedMd);
+    const step = findNode(orderedDoc, 'Step');
+    const wrappedO = planAndValidatePatch(orderedMd, orderedDoc, 'Test', {
+      type: 'insertParent',
+      guard: guardFor(orderedDoc, step),
+      parentTitle: 'Phase',
+    });
+    expect(wrappedO.ok).toBe(true);
+    if (!wrappedO.ok) return;
+    expect(wrappedO.nextRawText).toBe('# Root\n1. Phase\n   1. Step\n      1. Substep\n');
+  });
+
+  it('reorders siblings up and down while preserving blank lines and indent-sensitive blocks', () => {
+    const md = [
+      '# Root',
+      '## First',
+      '```ts',
+      'const a = 1;',
+      '```',
+      '',
+      '## Second',
+      '- Leaf B',
+      '',
+    ].join('\n');
+    const doc = parseOk(md);
+    const second = findNode(doc, 'Second');
+
+    const movedUp = planAndValidatePatch(md, doc, 'Test', {
+      type: 'moveSibling',
+      guard: guardFor(doc, second),
+      direction: 'up',
+    });
+    expect(movedUp.ok).toBe(true);
+    if (!movedUp.ok) return;
+    expect(movedUp.nextRawText).toBe(
+      [
+        '# Root',
+        '## Second',
+        '- Leaf B',
+        '',
+        '## First',
+        '```ts',
+        'const a = 1;',
+        '```',
+        '',
+      ].join('\n'),
+    );
+    expect(movedUp.nextDocument.nodes.get(movedUp.focusNodeId)?.titleRaw).toBe('Second');
+
+    // Moving first sibling up returns boundary-no-op
+    const movedSecond = movedUp.nextDocument.nodes.get(movedUp.focusNodeId);
+    if (!movedSecond) return;
+    const atTop = planAndValidatePatch(movedUp.nextRawText, movedUp.nextDocument, 'Test', {
+      type: 'moveSibling',
+      guard: guardFor(movedUp.nextDocument, movedSecond),
+      direction: 'up',
+    });
+    expect(atTop.ok).toBe(false);
+    if (!atTop.ok) expect(atTop.reason).toBe('boundary-no-op');
+
+    // Moving back down restores original order
+    const movedDown = planAndValidatePatch(movedUp.nextRawText, movedUp.nextDocument, 'Test', {
+      type: 'moveSibling',
+      guard: guardFor(movedUp.nextDocument, movedSecond),
+      direction: 'down',
+    });
+    expect(movedDown.ok).toBe(true);
+    if (!movedDown.ok) return;
+    expect(movedDown.nextRawText).toBe(md);
+  });
+
+  it('indents and outdents lists and headings cleanly, relocating middle siblings on outdent without reparenting others', () => {
+    // 1. Indent list item under ordered sibling (3 spaces)
+    const md = '# Root\n1. First\n- Second\n  - Child\n';
+    const doc = parseOk(md);
+    const second = findNode(doc, 'Second');
+
+    const indented = planAndValidatePatch(md, doc, 'Test', {
+      type: 'indent',
+      guard: guardFor(doc, second),
+    });
+    expect(indented.ok).toBe(true);
+    if (!indented.ok) return;
+    expect(indented.nextRawText).toBe('# Root\n1. First\n   - Second\n     - Child\n');
+
+    // 2. Outdent middle child relocates it after parent so following siblings keep parent
+    const midMd = [
+      '# Root',
+      '1. Parent',
+      '   - Child A',
+      '     - Grandchild A1',
+      '   - Child B',
+      '',
+    ].join('\n');
+    const midDoc = parseOk(midMd);
+    const childA = findNode(midDoc, 'Child A');
+
+    const outdented = planAndValidatePatch(midMd, midDoc, 'Test', {
+      type: 'outdent',
+      guard: guardFor(midDoc, childA),
+    });
+    expect(outdented.ok).toBe(true);
+    if (!outdented.ok) return;
+    expect(outdented.nextRawText).toBe(
+      ['# Root', '1. Parent', '   - Child B', '- Child A', '  - Grandchild A1', ''].join('\n'),
+    );
+    const childBAfter = findNode(outdented.nextDocument, 'Child B');
+    expect(outdented.nextDocument.nodes.get(childBAfter.parentId ?? '')?.titleRaw).toBe('Parent');
+
+    // 3. Reject outdent of list item directly under heading (mixed heading/list)
+    const mixedMd = '# Root\n## Section\n- Item\n';
+    const mixedDoc = parseOk(mixedMd);
+    const item = findNode(mixedDoc, 'Item');
+    const rejMixed = planAndValidatePatch(mixedMd, mixedDoc, 'Test', {
+      type: 'outdent',
+      guard: guardFor(mixedDoc, item),
+    });
+    expect(rejMixed.ok).toBe(false);
+    if (!rejMixed.ok) expect(rejMixed.reason).toBe('mixed-heading-list-conversion');
+  });
+
+  it('splits a topic atomically into two siblings while preserving task prefix and block ID', () => {
+    const md = '# Root\n- [ ] Alpha Beta ^blk-9\n  - Sub\n';
+    const doc = parseOk(md);
+    const target = findNode(doc, 'Alpha Beta');
+
+    const split = planAndValidatePatch(md, doc, 'Test', {
+      type: 'splitSibling',
+      guard: guardFor(doc, target),
+      leftTitle: 'Alpha',
+      rightTitle: 'Beta',
+    });
+    expect(split.ok).toBe(true);
+    if (!split.ok) return;
+    expect(split.nextRawText).toBe('# Root\n- [ ] Alpha ^blk-9\n  - Sub\n- Beta\n');
+    expect(split.nextDocument.nodes.get(split.focusNodeId)?.titleRaw).toBe('Beta');
+  });
+
+  it('toggles standard [ ] / [x] task checkboxes with a 1-char edit while rejecting non-tasks and custom markers', () => {
+    const md = '# Root\n- [ ] Write tests ^task-1\n- [-] Cancelled item\n- Plain item\n';
+    const doc = parseOk(md);
+    const todo = findNode(doc, 'Write tests');
+
+    const checked = planAndValidatePatch(md, doc, 'Test', {
+      type: 'toggleTask',
+      guard: guardFor(doc, todo),
+    });
+    expect(checked.ok).toBe(true);
+    if (!checked.ok) return;
+    expect(checked.edits).toHaveLength(1);
+    expect(checked.nextRawText).toBe('# Root\n- [x] Write tests ^task-1\n- [-] Cancelled item\n- Plain item\n');
+
+    const checkedNode = checked.nextDocument.nodes.get(checked.focusNodeId);
+    if (!checkedNode) return;
+    const unchecked = planAndValidatePatch(checked.nextRawText, checked.nextDocument, 'Test', {
+      type: 'toggleTask',
+      guard: guardFor(checked.nextDocument, checkedNode),
+    });
+    expect(unchecked.ok).toBe(true);
+    if (!unchecked.ok) return;
+    expect(unchecked.nextRawText).toBe(md);
+
+    // Custom [-] marker and plain list item are rejected
+    const cancelled = findNode(doc, 'Cancelled item');
+    const rejCustom = planAndValidatePatch(md, doc, 'Test', {
+      type: 'toggleTask',
+      guard: guardFor(doc, cancelled),
+    });
+    expect(rejCustom.ok).toBe(false);
+    if (!rejCustom.ok) expect(rejCustom.reason).toBe('not-a-task');
+
+    const plain = findNode(doc, 'Plain item');
+    const rejPlain = planAndValidatePatch(md, doc, 'Test', {
+      type: 'toggleTask',
+      guard: guardFor(doc, plain),
+    });
+    expect(rejPlain.ok).toBe(false);
+    if (!rejPlain.ok) expect(rejPlain.reason).toBe('not-a-task');
   });
 });
