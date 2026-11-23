@@ -239,7 +239,11 @@ export class DraftStore {
   private drafts: DraftEntry[];
   private readonly deviceId: string;
   private readonly listeners = new Set<() => void>();
-  private readonly unpersistedDraftIds = new Set<string>();
+  /** Monotonic local mutation counter used so older successful writes never clear newer dirty drafts. */
+  private revision = 0;
+  private readonly dirtyRevisionByDraftId = new Map<string, number>();
+  /** Serializes persist() calls in FIFO order so older snapshots cannot overwrite newer ones on disk. */
+  private persistChain: Promise<void> = Promise.resolve();
 
   constructor(
     initialDrafts: readonly DraftEntry[],
@@ -263,16 +267,43 @@ export class DraftStore {
     }
   }
 
+  private enqueuePersist(snapshot: readonly DraftEntry[], snapshotRev: number): Promise<boolean> {
+    const run = async (): Promise<boolean> => {
+      let persisted = false;
+      try {
+        persisted = await this.persist(snapshot);
+      } catch {
+        persisted = false;
+      }
+      if (persisted) {
+        for (const [draftId, dirtyRev] of this.dirtyRevisionByDraftId) {
+          if (dirtyRev <= snapshotRev) {
+            this.dirtyRevisionByDraftId.delete(draftId);
+          }
+        }
+      }
+      this.emitChange();
+      return persisted;
+    };
+
+    const resultPromise = this.persistChain.then(run, run);
+    this.persistChain = resultPromise.then(
+      () => undefined,
+      () => undefined,
+    );
+    return resultPromise;
+  }
+
   getAllDrafts(): readonly DraftEntry[] {
     return this.drafts;
   }
 
   getUnpersistedDraftIds(): ReadonlySet<string> {
-    return new Set(this.unpersistedDraftIds);
+    return new Set(this.dirtyRevisionByDraftId.keys());
   }
 
   isDraftPersisted(draftId: string): boolean {
-    return !this.unpersistedDraftIds.has(draftId);
+    return !this.dirtyRevisionByDraftId.has(draftId);
   }
 
   listDraftsForFile(filePath: string): readonly DraftEntry[] {
@@ -358,22 +389,20 @@ export class DraftStore {
     // Evict oldest entries if cap exceeded
     if (nextList.length > MAX_DRAFTS) {
       nextList.sort((a, b) => b.savedAt - a.savedAt);
+      const evicted = nextList.slice(MAX_DRAFTS);
       nextList.length = MAX_DRAFTS;
+      for (const dropped of evicted) {
+        this.dirtyRevisionByDraftId.delete(dropped.draftId);
+      }
     }
 
     this.drafts = nextList;
-    let persisted = false;
-    try {
-      persisted = await this.persist(this.drafts);
-    } catch {
-      persisted = false;
-    }
-    if (persisted) {
-      this.unpersistedDraftIds.clear();
-    } else {
-      this.unpersistedDraftIds.add(nextEntry.draftId);
-    }
+    this.revision += 1;
+    const snapshotRev = this.revision;
+    this.dirtyRevisionByDraftId.set(nextEntry.draftId, snapshotRev);
     this.emitChange();
+
+    const persisted = await this.enqueuePersist([...this.drafts], snapshotRev);
     return { entry: nextEntry, persisted };
   }
 
@@ -381,17 +410,11 @@ export class DraftStore {
     const nextList = this.drafts.filter((entry) => entry.draftId !== draftId);
     if (nextList.length === this.drafts.length) return;
     this.drafts = nextList;
-    this.unpersistedDraftIds.delete(draftId);
-    let persisted = false;
-    try {
-      persisted = await this.persist(this.drafts);
-    } catch {
-      persisted = false;
-    }
-    if (persisted) {
-      this.unpersistedDraftIds.clear();
-    }
+    this.dirtyRevisionByDraftId.delete(draftId);
+    this.revision += 1;
+    const snapshotRev = this.revision;
     this.emitChange();
+    await this.enqueuePersist([...this.drafts], snapshotRev);
   }
 
   async deleteMatchingDraft(
@@ -428,15 +451,14 @@ export class DraftStore {
     });
     if (!changed) return;
     this.drafts = nextList;
-    let persisted = false;
-    try {
-      persisted = await this.persist(this.drafts);
-    } catch {
-      persisted = false;
-    }
-    if (persisted) {
-      this.unpersistedDraftIds.clear();
+    this.revision += 1;
+    const snapshotRev = this.revision;
+    for (const entry of nextList) {
+      if (entry.filePath === newPath) {
+        this.dirtyRevisionByDraftId.set(entry.draftId, snapshotRev);
+      }
     }
     this.emitChange();
+    await this.enqueuePersist([...this.drafts], snapshotRev);
   }
 }
