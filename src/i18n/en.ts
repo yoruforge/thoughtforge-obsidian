@@ -114,7 +114,9 @@ export const en = {
     draftFieldNote: 'Note draft',
     draftRestoreButton: 'Restore',
     draftRestoreHereButton: 'Restore here',
+    draftCopyButton: 'Copy',
     draftDiscardButton: 'Discard',
+    draftUnpersistedBadge: 'Memory only (lost on restart)',
     draftSavedContextTopic: 'Original topic',
     draftSavedContextLine: 'Saved line',
     draftSavedContextParent: 'Path',
@@ -184,8 +186,11 @@ export const en = {
     editorUnknown: 'Could not verify the open Markdown editor state. Save the note and retry.',
     invariantRejected: 'Edit cancelled to protect Markdown structure and preserved blocks.',
     invalidNoteBlockSyntax:
-      'Topic notes support plain paragraphs only (headings, lists, code blocks, quotes, tables, or HTML must be edited in Markdown). Your text was saved as a draft.',
+      'Topic notes support plain paragraphs only (headings, lists, code blocks, quotes, tables, or HTML must be edited in Markdown).',
     draftSavedNotice: 'Write was rejected, so your unsaved input was safely preserved as a draft.',
+    draftPersistFailedNotice:
+      'Could not persist draft to data.json (storage protected or write failed; lost on restart). Copy or retry your input: ',
+    draftCopiedNotice: 'Copied draft text to clipboard.',
     branchCopiedNotice: 'Copied selected branch to clipboard.',
     branchCutNotice: 'Cut selected branch to clipboard.',
     clipboardEmptyNotice: 'Clipboard is empty — copy a branch first.',

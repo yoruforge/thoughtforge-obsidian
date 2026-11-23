@@ -218,7 +218,12 @@ export function resolveDraftNodeId(doc: MindMapDocument, draft: DraftEntry): str
   return res.status === 'matched' ? res.nodeId : null;
 }
 
-export type DraftPersistHandler = (drafts: readonly DraftEntry[]) => Promise<void>;
+export type DraftPersistHandler = (drafts: readonly DraftEntry[]) => Promise<boolean>;
+
+export interface SaveDraftResult {
+  readonly entry: DraftEntry;
+  readonly persisted: boolean;
+}
 
 function generateId(prefix: string): string {
   const randomPart = Math.random().toString(36).slice(2, 10);
@@ -234,6 +239,7 @@ export class DraftStore {
   private drafts: DraftEntry[];
   private readonly deviceId: string;
   private readonly listeners = new Set<() => void>();
+  private readonly unpersistedDraftIds = new Set<string>();
 
   constructor(
     initialDrafts: readonly DraftEntry[],
@@ -259,6 +265,14 @@ export class DraftStore {
 
   getAllDrafts(): readonly DraftEntry[] {
     return this.drafts;
+  }
+
+  getUnpersistedDraftIds(): ReadonlySet<string> {
+    return new Set(this.unpersistedDraftIds);
+  }
+
+  isDraftPersisted(draftId: string): boolean {
+    return !this.unpersistedDraftIds.has(draftId);
   }
 
   listDraftsForFile(filePath: string): readonly DraftEntry[] {
@@ -291,7 +305,7 @@ export class DraftStore {
     );
   }
 
-  async saveDraft(input: SaveDraftInput): Promise<DraftEntry> {
+  async saveDraft(input: SaveDraftInput): Promise<SaveDraftResult> {
     const clampedText =
       input.text.length > MAX_DRAFT_TEXT_CHARS
         ? input.text.slice(0, MAX_DRAFT_TEXT_CHARS)
@@ -348,17 +362,36 @@ export class DraftStore {
     }
 
     this.drafts = nextList;
+    let persisted = false;
+    try {
+      persisted = await this.persist(this.drafts);
+    } catch {
+      persisted = false;
+    }
+    if (persisted) {
+      this.unpersistedDraftIds.clear();
+    } else {
+      this.unpersistedDraftIds.add(nextEntry.draftId);
+    }
     this.emitChange();
-    await this.persist(this.drafts);
-    return nextEntry;
+    return { entry: nextEntry, persisted };
   }
 
   async deleteDraft(draftId: string): Promise<void> {
     const nextList = this.drafts.filter((entry) => entry.draftId !== draftId);
     if (nextList.length === this.drafts.length) return;
     this.drafts = nextList;
+    this.unpersistedDraftIds.delete(draftId);
+    let persisted = false;
+    try {
+      persisted = await this.persist(this.drafts);
+    } catch {
+      persisted = false;
+    }
+    if (persisted) {
+      this.unpersistedDraftIds.clear();
+    }
     this.emitChange();
-    await this.persist(this.drafts);
   }
 
   async deleteMatchingDraft(
@@ -395,7 +428,15 @@ export class DraftStore {
     });
     if (!changed) return;
     this.drafts = nextList;
+    let persisted = false;
+    try {
+      persisted = await this.persist(this.drafts);
+    } catch {
+      persisted = false;
+    }
+    if (persisted) {
+      this.unpersistedDraftIds.clear();
+    }
     this.emitChange();
-    await this.persist(this.drafts);
   }
 }

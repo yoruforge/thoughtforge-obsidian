@@ -503,6 +503,7 @@ export class MindMapView extends FileView {
         settings: this.plugin.mindMapSettings,
         messages: this.plugin.messages,
         drafts: fileDrafts,
+        unpersistedDraftIds: draftStore.getUnpersistedDraftIds(),
         onSaveDraft: (input: SaveDraftInput) => draftStore.saveDraft(input),
         onDeleteDraft: (draftId: string) => draftStore.deleteDraft(draftId),
         onDeleteMatchingDraft: (

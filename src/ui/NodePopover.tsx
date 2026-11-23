@@ -24,6 +24,7 @@ export interface NodePopoverProps {
   readonly startEditingNoteToken: number;
   readonly nodeDrafts: readonly DraftEntry[];
   readonly ambiguousDrafts?: readonly DraftEntry[];
+  readonly unpersistedDraftIds?: ReadonlySet<string>;
   readonly noteCommitTriggerRef?: MutableRefObject<((event: GuardableKeyEvent) => boolean) | null>;
   readonly onCommitNote?: (
     session: NoteEditingSession,
@@ -32,6 +33,7 @@ export interface NodePopoverProps {
   readonly onRescueNoteDraft?: (session: NoteEditingSession, unsavedBody: string) => void;
   readonly onRestoreTitleDraft?: (nodeId: string, draftText: string, draftId: string) => void;
   readonly onDeleteDraft?: (draftId: string) => void;
+  readonly onCopyDraftText?: (draftText: string) => void;
   readonly onClose: () => void;
   readonly onJumpToSource: (line: number) => void;
   readonly onOpenLink: (link: TopicLink, newTab: boolean) => void;
@@ -48,11 +50,13 @@ export function NodePopover({
   startEditingNoteToken,
   nodeDrafts,
   ambiguousDrafts = [],
+  unpersistedDraftIds,
   noteCommitTriggerRef,
   onCommitNote,
   onRescueNoteDraft,
   onRestoreTitleDraft,
   onDeleteDraft,
+  onCopyDraftText,
   onClose,
   onJumpToSource,
   onOpenLink,
@@ -297,6 +301,11 @@ export function NodePopover({
                     ? messages.popover.draftFieldNote
                     : messages.popover.draftFieldTitle}
                 </span>
+                {unpersistedDraftIds?.has(draft.draftId) && (
+                  <span className="ito-draft-unpersisted-badge">
+                    {messages.popover.draftUnpersistedBadge}
+                  </span>
+                )}
                 <span className="ito-draft-preview-text">{draft.text.slice(0, 80)}</span>
               </div>
               <div className="ito-draft-item-actions">
@@ -316,6 +325,15 @@ export function NodePopover({
                     onClick={() => onRestoreTitleDraft(node.id, draft.text, draft.draftId)}
                   >
                     {messages.popover.draftRestoreButton}
+                  </button>
+                )}
+                {onCopyDraftText && (
+                  <button
+                    type="button"
+                    className="ito-btn ito-draft-copy-btn"
+                    onClick={() => onCopyDraftText(draft.text)}
+                  >
+                    {messages.popover.draftCopyButton}
                   </button>
                 )}
                 {onDeleteDraft && (
@@ -366,6 +384,11 @@ export function NodePopover({
                       ? messages.popover.draftFieldNote
                       : messages.popover.draftFieldTitle}
                   </span>
+                  {unpersistedDraftIds?.has(draft.draftId) && (
+                    <span className="ito-draft-unpersisted-badge">
+                      {messages.popover.draftUnpersistedBadge}
+                    </span>
+                  )}
                   <span className="ito-draft-preview-text">{draft.text.slice(0, 80)}</span>
                 </div>
                 {contextParts.length > 0 && (
@@ -388,6 +411,15 @@ export function NodePopover({
                       onClick={() => onRestoreTitleDraft(node.id, draft.text, draft.draftId)}
                     >
                       {messages.popover.draftRestoreHereButton}
+                    </button>
+                  )}
+                  {onCopyDraftText && (
+                    <button
+                      type="button"
+                      className="ito-btn ito-draft-copy-btn"
+                      onClick={() => onCopyDraftText(draft.text)}
+                    >
+                      {messages.popover.draftCopyButton}
                     </button>
                   )}
                   {onDeleteDraft && (
