@@ -13,7 +13,11 @@ import type { MindMapDocument, ParseResult, TopicLink, TopicNode } from '../core
 import { parseMarkdownToMap } from '../core/parser';
 import { extractSubtreeMarkdown } from '../core/patch';
 import type { SemanticCommand } from '../core/patch/commands';
-import { MapNavigationHistory, type MapHistoryEntry } from '../core/view/navigationHistory';
+import {
+  MapNavigationHistory,
+  type MapHistoryAnchor,
+  type MapHistoryEntry,
+} from '../core/view/navigationHistory';
 import { splitLinkTargetSubpath } from '../core/view/topicResolver';
 import type { Messages } from '../i18n';
 import type { SaveDraftInput } from '../sync/DraftStore';
@@ -165,7 +169,7 @@ export class MindMapView extends FileView {
   private readonly navHistory = new MapNavigationHistory();
   private pendingReveal: MapRevealRequest | null = null;
   private nextRevealToken = 0;
-  private selectedHeaderLine: number | undefined = undefined;
+  private selectedAnchor: MapHistoryAnchor | undefined = undefined;
   private suppressNextLoadHistoryRecord = false;
   private isNavigating = false;
   private loadSequence = 0;
@@ -173,8 +177,8 @@ export class MindMapView extends FileView {
   private readonly registerActionTriggers = (triggers: MindMapActionTriggers | null): void => {
     this.actionTriggers = triggers;
   };
-  private readonly handleSelectedLineChange = (line: number | undefined): void => {
-    this.selectedHeaderLine = line;
+  private readonly handleSelectedAnchorChange = (anchor: MapHistoryAnchor | undefined): void => {
+    this.selectedAnchor = anchor;
   };
 
   constructor(
@@ -352,7 +356,7 @@ export class MindMapView extends FileView {
     try {
       const currentPath = this.file?.path;
       if (currentPath) {
-        this.navHistory.updateCurrentAnchor(currentPath, this.selectedHeaderLine);
+        this.navHistory.updateCurrentAnchor(currentPath, this.selectedAnchor);
       }
 
       while (true) {
@@ -378,11 +382,12 @@ export class MindMapView extends FileView {
         }
 
         const nextReveal: MapRevealRequest | null =
-          target.targetSubpath !== undefined || target.targetLine !== undefined
+          target.targetAnchor !== undefined || target.targetSubpath !== undefined
             ? {
                 token: ++this.nextRevealToken,
                 filePath: target.filePath,
-                ...(target.targetLine !== undefined ? { line: target.targetLine } : {}),
+                fromHistory: true,
+                ...(target.targetAnchor !== undefined ? { anchor: target.targetAnchor } : {}),
                 ...(target.targetSubpath !== undefined ? { subpath: target.targetSubpath } : {}),
               }
             : null;
@@ -524,6 +529,7 @@ export class MindMapView extends FileView {
     isHistoryAction: boolean,
   ): void {
     if (outcome.accepted && outcome.nextDocument !== undefined) {
+      this.plugin.getMetadataProvider().markFileUpdating(targetPath);
       this.parseResult = { status: 'ok', document: outcome.nextDocument };
       this.lastCommandFocus =
         outcome.focusNodeId !== undefined
@@ -562,7 +568,7 @@ export class MindMapView extends FileView {
     this.parseResult = null;
     this.lastCommandFocus = null;
     this.lastRenderedSnapshot = null;
-    this.selectedHeaderLine = undefined;
+    this.selectedAnchor = undefined;
     if (this.pendingReveal?.filePath === file.path) {
       this.pendingReveal = null;
     }
@@ -575,7 +581,7 @@ export class MindMapView extends FileView {
     this.parseResult = null;
     this.lastCommandFocus = null;
     this.lastRenderedSnapshot = null;
-    this.selectedHeaderLine = undefined;
+    this.selectedAnchor = undefined;
     this.pendingReveal = null;
     this.navHistory.clear();
     this.actionTriggers = null;
@@ -643,6 +649,7 @@ export class MindMapView extends FileView {
 
     const activePath = this.file?.path ?? '';
     const draftStore = this.plugin.getDraftStore();
+    const metadataProvider = this.plugin.getMetadataProvider();
     const fileDrafts = activePath.length > 0 ? draftStore.listDraftsForFile(activePath) : [];
 
     const backEntry = this.navHistory.peekBack();
@@ -678,13 +685,15 @@ export class MindMapView extends FileView {
         onNavigateForward: () => {
           void this.navigateForward();
         },
-        onSelectedLineChange: this.handleSelectedLineChange,
+        onSelectedAnchorChange: this.handleSelectedAnchorChange,
         themeMode: this.resolveThemeMode(),
         settings: this.plugin.mindMapSettings,
         messages: this.plugin.messages,
         drafts: fileDrafts,
         unpersistedDraftIds: draftStore.getUnpersistedDraftIds(),
         draftRevisions: draftStore.getDraftRevisions(),
+        metadataProvider,
+        metadataVersion: metadataProvider.getVersion(),
         onSaveDraft: (input: SaveDraftInput) => draftStore.saveDraft(input),
         onIsLatestDraftRevision: (draftId: string, expectedRevision: number) =>
           draftStore.isLatestDraftRevision(draftId, expectedRevision),
@@ -721,6 +730,9 @@ export class MindMapView extends FileView {
         },
         onOpenLink: (link: TopicLink, newTab: boolean) => {
           void this.handleOpenLink(link, newTab);
+        },
+        onOpenVaultFile: (vaultPath: string, newTab: boolean) => {
+          void this.handleOpenVaultFile(vaultPath, newTab);
         },
         onUpdateSettings: (patch) => {
           void this.plugin.updateSettings(patch);
@@ -770,6 +782,81 @@ export class MindMapView extends FileView {
     }
   }
 
+  private async navigateToMarkdownFile(
+    sourceFile: TFile,
+    destination: TFile,
+    subpath: string | undefined,
+    newTab: boolean,
+  ): Promise<void> {
+    if (newTab) {
+      await this.plugin.openFileAsMindMap(destination, {
+        openMode: 'new-tab',
+        ...(subpath !== undefined ? { reveal: { subpath } } : {}),
+      });
+      return;
+    }
+
+    if (destination.path === sourceFile.path) {
+      if (subpath !== undefined) {
+        this.navHistory.updateCurrentAnchor(sourceFile.path, this.selectedAnchor);
+        this.navHistory.recordVisit({
+          filePath: sourceFile.path,
+          targetSubpath: subpath,
+        });
+        this.revealTarget({ subpath });
+      } else {
+        this.revealTarget({ line: 0 });
+      }
+      return;
+    }
+
+    this.isNavigating = true;
+    this.suppressNextLoadHistoryRecord = true;
+    try {
+      this.navHistory.updateCurrentAnchor(sourceFile.path, this.selectedAnchor);
+      this.navHistory.recordVisit({
+        filePath: destination.path,
+        ...(subpath !== undefined ? { targetSubpath: subpath } : {}),
+      });
+      this.pendingReveal =
+        subpath !== undefined
+          ? {
+              token: ++this.nextRevealToken,
+              filePath: destination.path,
+              subpath,
+            }
+          : null;
+      await this.leaf.setViewState({
+        type: MINDMAP_VIEW_TYPE,
+        state: { file: destination.path },
+        active: true,
+      });
+    } finally {
+      this.suppressNextLoadHistoryRecord = false;
+      this.isNavigating = false;
+    }
+  }
+
+  private async handleOpenVaultFile(vaultPath: string, newTab: boolean): Promise<void> {
+    if (this.isNavigating) return;
+    const sourceFile = this.file;
+    if (!sourceFile) return;
+
+    const destination = this.app.vault.getAbstractFileByPath(vaultPath);
+    if (!(destination instanceof TFile)) {
+      new Notice(this.plugin.messages.notices.noteNotFound);
+      return;
+    }
+
+    if (destination.extension.toLowerCase() === 'md') {
+      await this.navigateToMarkdownFile(sourceFile, destination, undefined, newTab);
+      return;
+    }
+
+    const leaf = this.app.workspace.getLeaf(newTab ? 'tab' : false);
+    await leaf.openFile(destination);
+  }
+
   private async handleOpenLink(link: TopicLink, newTab: boolean): Promise<void> {
     if (this.isNavigating) return;
     const sourceFile = this.file;
@@ -786,7 +873,9 @@ export class MindMapView extends FileView {
       return;
     }
 
-    const { pathPart, subpath } = splitLinkTargetSubpath(link.target);
+    const { pathPart, subpath } = splitLinkTargetSubpath(link.target, {
+      decodePath: link.kind === 'markdown',
+    });
     const destination =
       pathPart.length === 0
         ? sourceFile
@@ -798,53 +887,7 @@ export class MindMapView extends FileView {
     }
 
     if (destination instanceof TFile && destination.extension.toLowerCase() === 'md') {
-      if (newTab) {
-        await this.plugin.openFileAsMindMap(destination, {
-          openMode: 'new-tab',
-          ...(subpath !== undefined ? { reveal: { subpath } } : {}),
-        });
-        return;
-      }
-
-      if (destination.path === sourceFile.path) {
-        if (subpath !== undefined) {
-          this.navHistory.updateCurrentAnchor(sourceFile.path, this.selectedHeaderLine);
-          this.navHistory.recordVisit({
-            filePath: sourceFile.path,
-            targetSubpath: subpath,
-          });
-          this.revealTarget({ subpath });
-        } else {
-          this.revealTarget({ line: 0 });
-        }
-        return;
-      }
-
-      this.isNavigating = true;
-      this.suppressNextLoadHistoryRecord = true;
-      try {
-        this.navHistory.updateCurrentAnchor(sourceFile.path, this.selectedHeaderLine);
-        this.navHistory.recordVisit({
-          filePath: destination.path,
-          ...(subpath !== undefined ? { targetSubpath: subpath } : {}),
-        });
-        this.pendingReveal =
-          subpath !== undefined
-            ? {
-                token: ++this.nextRevealToken,
-                filePath: destination.path,
-                subpath,
-              }
-            : null;
-        await this.leaf.setViewState({
-          type: MINDMAP_VIEW_TYPE,
-          state: { file: destination.path },
-          active: true,
-        });
-      } finally {
-        this.suppressNextLoadHistoryRecord = false;
-        this.isNavigating = false;
-      }
+      await this.navigateToMarkdownFile(sourceFile, destination, subpath, newTab);
       return;
     }
 

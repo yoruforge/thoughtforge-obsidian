@@ -20,7 +20,7 @@ import type {
   MindMapDocument,
   TopicLink,
 } from '../core/model';
-import { DomNodeLayer } from './DomNodeLayer';
+import { DomNodeLayer, type NodeThumbnailInfo } from './DomNodeLayer';
 import { resolveDropTarget, type DropTarget } from './dragDrop';
 import type { EditingSession } from './editSession';
 import type { GuardableKeyEvent } from './imeGuard';
@@ -47,6 +47,7 @@ export interface ViewportCanvasProps {
   readonly matchedNodeIds: ReadonlySet<string>;
   readonly effectiveCollapsedIds: ReadonlySet<string>;
   readonly numberingLabels: ReadonlyMap<string, string>;
+  readonly nodeThumbnails?: ReadonlyMap<string, NodeThumbnailInfo>;
   readonly palette: MapThemePalette;
   readonly rainbowBranches: boolean;
   readonly colorStyle: ColorStyleMode;
@@ -56,7 +57,7 @@ export interface ViewportCanvasProps {
   readonly onSelectNode: (nodeId: string | null) => void;
   readonly onToggleCollapse: (nodeId: string) => void;
   readonly onOpenPopover: (nodeId: string) => void;
-  readonly onOpenLink: (link: TopicLink, newTab: boolean) => void;
+  readonly onOpenLink: (link: TopicLink, newTab: boolean, sourceNodeId?: string) => void;
   readonly onStartEdit: (nodeId: string) => void;
   readonly onCommitEdit: (session: EditingSession, nextTitle: string) => void;
   readonly onSplitEdit: (
@@ -96,6 +97,7 @@ export function ViewportCanvas({
   matchedNodeIds,
   effectiveCollapsedIds,
   numberingLabels,
+  nodeThumbnails,
   palette,
   rainbowBranches,
   colorStyle,
@@ -411,6 +413,7 @@ export function ViewportCanvas({
           matchedNodeIds={matchedNodeIds}
           effectiveCollapsedIds={effectiveCollapsedIds}
           numberingLabels={numberingLabels}
+          nodeThumbnails={nodeThumbnails}
           palette={palette}
           rainbowBranches={rainbowBranches}
           colorStyle={colorStyle}

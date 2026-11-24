@@ -7,9 +7,11 @@ import {
   type PluginSettings,
 } from './core/model';
 import { getMessages, type Messages } from './i18n';
+import { isSafeVaultImagePath } from './core/view/imageEmbeds';
 import { registerPluginCommands } from './obsidian/commands';
 import { MINDMAP_VIEW_TYPE, MindMapView } from './obsidian/MindMapView';
 import { ObsidianHostAdapter } from './obsidian/ObsidianHostAdapter';
+import { ObsidianMetadataProvider } from './obsidian/ObsidianMetadataProvider';
 import { MindMapSettingTab } from './obsidian/settingsTab';
 import { DraftStore } from './sync/DraftStore';
 import { FileCoordinator } from './sync/FileCoordinator';
@@ -132,12 +134,31 @@ export default class ThoughtForgePlugin extends Plugin {
   private dataWritable = true;
   private fileCoordinator: FileCoordinator | null = null;
   private draftStore: DraftStore | null = null;
+  private metadataProvider: ObsidianMetadataProvider | null = null;
+  private metadataRefreshTimer: number | null = null;
   private branchClipboardMarkdown: string | null = null;
   private branchClipboardSyncedToOs = true;
   messages: Messages = getMessages('en');
 
   get mindMapSettings(): PluginSettings {
     return this.pluginData.settings;
+  }
+
+  getMetadataProvider(): ObsidianMetadataProvider {
+    if (this.metadataProvider === null) {
+      this.metadataProvider = new ObsidianMetadataProvider(this.app);
+    }
+    return this.metadataProvider;
+  }
+
+  private scheduleMetadataRefresh(): void {
+    if (this.metadataRefreshTimer !== null) {
+      window.clearTimeout(this.metadataRefreshTimer);
+    }
+    this.metadataRefreshTimer = window.setTimeout(() => {
+      this.metadataRefreshTimer = null;
+      this.refreshAllViews();
+    }, 120);
   }
 
   getFileCoordinator(): FileCoordinator {
@@ -198,10 +219,27 @@ export default class ThoughtForgePlugin extends Plugin {
     this.addSettingTab(new MindMapSettingTab(this.app, this));
 
     this.registerEvent(
+      this.app.vault.on('create', (abstractFile) => {
+        if (abstractFile instanceof TFile && isSafeVaultImagePath(abstractFile.path)) {
+          this.getMetadataProvider().bumpVersion();
+          this.scheduleMetadataRefresh();
+        }
+      }),
+    );
+
+    this.registerEvent(
       this.app.vault.on('modify', (abstractFile) => {
-        if (!(abstractFile instanceof TFile) || abstractFile.extension.toLowerCase() !== 'md') {
+        if (!(abstractFile instanceof TFile)) {
           return;
         }
+        if (abstractFile.extension.toLowerCase() !== 'md') {
+          if (isSafeVaultImagePath(abstractFile.path)) {
+            this.getMetadataProvider().bumpVersion();
+            this.scheduleMetadataRefresh();
+          }
+          return;
+        }
+        this.getMetadataProvider().markFileUpdating(abstractFile.path);
         for (const leaf of this.app.workspace.getLeavesOfType(MINDMAP_VIEW_TYPE)) {
           if (leaf.view instanceof MindMapView && leaf.view.file?.path === abstractFile.path) {
             void leaf.view.reloadFromFile(abstractFile);
@@ -212,7 +250,12 @@ export default class ThoughtForgePlugin extends Plugin {
 
     this.registerEvent(
       this.app.vault.on('rename', (abstractFile, oldPath) => {
-        if (!(abstractFile instanceof TFile) || abstractFile.extension.toLowerCase() !== 'md') {
+        if (!(abstractFile instanceof TFile)) {
+          return;
+        }
+        this.getMetadataProvider().renamePath(oldPath, abstractFile.path);
+        this.scheduleMetadataRefresh();
+        if (abstractFile.extension.toLowerCase() !== 'md') {
           return;
         }
         this.fileCoordinator?.renameHistoryPath(oldPath, abstractFile.path);
@@ -230,14 +273,32 @@ export default class ThoughtForgePlugin extends Plugin {
 
     this.registerEvent(
       this.app.vault.on('delete', (abstractFile) => {
-        if (abstractFile instanceof TFile && abstractFile.extension.toLowerCase() === 'md') {
-          this.fileCoordinator?.clearHistory(abstractFile.path);
-          for (const leaf of this.app.workspace.getLeavesOfType(MINDMAP_VIEW_TYPE)) {
-            if (leaf.view instanceof MindMapView) {
-              leaf.view.removeHistoryPath(abstractFile.path);
+        if (abstractFile instanceof TFile) {
+          this.getMetadataProvider().removePath(abstractFile.path);
+          this.scheduleMetadataRefresh();
+          if (abstractFile.extension.toLowerCase() === 'md') {
+            this.fileCoordinator?.clearHistory(abstractFile.path);
+            for (const leaf of this.app.workspace.getLeavesOfType(MINDMAP_VIEW_TYPE)) {
+              if (leaf.view instanceof MindMapView) {
+                leaf.view.removeHistoryPath(abstractFile.path);
+              }
             }
           }
         }
+      }),
+    );
+
+    this.registerEvent(
+      this.app.metadataCache.on('changed', (file) => {
+        this.getMetadataProvider().markFileFresh(file.path);
+        this.scheduleMetadataRefresh();
+      }),
+    );
+
+    this.registerEvent(
+      this.app.metadataCache.on('resolved', () => {
+        this.getMetadataProvider().markAllFresh();
+        this.scheduleMetadataRefresh();
       }),
     );
 
@@ -249,8 +310,13 @@ export default class ThoughtForgePlugin extends Plugin {
   }
 
   onunload(): void {
+    if (this.metadataRefreshTimer !== null) {
+      window.clearTimeout(this.metadataRefreshTimer);
+      this.metadataRefreshTimer = null;
+    }
     this.fileCoordinator = null;
     this.draftStore = null;
+    this.metadataProvider = null;
     this.branchClipboardMarkdown = null;
     // Workspace view cleanup is handled via MindMapView.onClose().
   }

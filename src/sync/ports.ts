@@ -24,6 +24,17 @@ export interface BacklinkItem {
   readonly targetsSpecificAnchor: boolean;
 }
 
+export interface BacklinkQueryTarget {
+  readonly doc: MindMapDocument;
+  readonly nodeId: string;
+}
+
+export interface ResolvedNodeImage {
+  readonly target: string;
+  readonly src: string;
+  readonly alt: string;
+}
+
 /**
  * Host abstraction port for Vault I/O and editor inspection.
  * Implemented in M2 so Sync logic can be unit-tested with pure mocks.
@@ -39,13 +50,20 @@ export interface ObsidianHostPort {
 }
 
 /**
- * Reserved read-only port for Phase 2 (M4) Obsidian metadataCache features
+ * Read-only port for Phase 2 (M4) Obsidian metadataCache features
  * (backlinks, image embeds, freshness tracking).
  */
 export interface NodeMetadataProvider {
   getFreshness(filePath: string, contentHash: string): 'fresh' | 'updating';
   getResolvedImageSrc(sourcePath: string, embedText: string): string | null;
-  getBacklinks(filePath: string, headingOrBlockId?: string): readonly BacklinkItem[];
+  getResolvedNodeImages?(
+    filePath: string,
+    doc: MindMapDocument,
+  ): ReadonlyMap<string, readonly ResolvedNodeImage[]>;
+  getBacklinks(
+    filePath: string,
+    target?: BacklinkQueryTarget,
+  ): readonly BacklinkItem[];
 }
 
 export interface CommandDispatchOutcome {

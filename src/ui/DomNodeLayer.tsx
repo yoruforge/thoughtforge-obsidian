@@ -98,6 +98,11 @@ function renderTitleWithTagPills(
   );
 }
 
+export interface NodeThumbnailInfo {
+  readonly src: string;
+  readonly alt: string;
+}
+
 export interface DomNodeLayerProps {
   readonly document: MindMapDocument;
   readonly visibleLayoutNodes: readonly LayoutNode[];
@@ -113,6 +118,7 @@ export interface DomNodeLayerProps {
   readonly matchedNodeIds: ReadonlySet<string>;
   readonly effectiveCollapsedIds: ReadonlySet<string>;
   readonly numberingLabels: ReadonlyMap<string, string>;
+  readonly nodeThumbnails?: ReadonlyMap<string, NodeThumbnailInfo>;
   readonly palette: MapThemePalette;
   readonly rainbowBranches: boolean;
   readonly colorStyle: ColorStyleMode;
@@ -121,7 +127,7 @@ export interface DomNodeLayerProps {
   readonly onSelectNode: (nodeId: string) => void;
   readonly onToggleCollapse: (nodeId: string) => void;
   readonly onOpenPopover: (nodeId: string) => void;
-  readonly onOpenLink: (link: TopicLink, newTab: boolean) => void;
+  readonly onOpenLink: (link: TopicLink, newTab: boolean, sourceNodeId?: string) => void;
   readonly onStartEdit: (nodeId: string) => void;
   readonly onCommitEdit: (session: EditingSession, nextTitle: string) => void;
   readonly onSplitEdit: (
@@ -159,6 +165,7 @@ export function DomNodeLayer({
   matchedNodeIds,
   effectiveCollapsedIds,
   numberingLabels,
+  nodeThumbnails,
   palette,
   rainbowBranches,
   colorStyle,
@@ -238,7 +245,7 @@ export function DomNodeLayer({
         const handleLinkClick = (event: MouseEvent<HTMLButtonElement>): void => {
           event.stopPropagation();
           if (firstLink) {
-            onOpenLink(firstLink, event.metaKey || event.ctrlKey);
+            onOpenLink(firstLink, event.metaKey || event.ctrlKey, ln.id);
           }
         };
 
@@ -254,6 +261,7 @@ export function DomNodeLayer({
         const isDragged = draggedNodeId === ln.id;
         const dropPlacement =
           dropTarget !== null && dropTarget.hoverNodeId === ln.id ? dropTarget.placement : null;
+        const thumbnail = !isEditing ? nodeThumbnails?.get(ln.id) : undefined;
         const classNames = [
           'ito-node',
           isCenter ? 'ito-node-center' : `ito-node-${ln.side}`,
@@ -263,6 +271,7 @@ export function DomNodeLayer({
           isDragged ? 'ito-node-dragging' : '',
           dropPlacement !== null ? `ito-node-drop-${dropPlacement}` : '',
           levelStyle.shape === 'underline' ? 'ito-node-underline' : '',
+          thumbnail !== undefined ? 'ito-node-has-thumb' : '',
         ]
           .filter(Boolean)
           .join(' ');
@@ -340,7 +349,7 @@ export function DomNodeLayer({
                 onDiscard={onDiscardEdit}
               />
             ) : (
-              <>
+              <div className="ito-node-row">
                 {topic.preservedPrefix.length > 0 &&
                   (isStandardTask && !isReadOnly ? (
                     <button
@@ -375,49 +384,63 @@ export function DomNodeLayer({
                     onToggleTagFilter,
                   )}
                 </span>
-              </>
+
+                {(topic.noteRange !== null ||
+                  topic.unmappedBlocks.length > 0 ||
+                  firstLink !== undefined) && (
+                  <span className="ito-node-badges">
+                    {topic.noteRange !== null && (
+                      <button
+                        type="button"
+                        className="ito-badge ito-badge-note"
+                        title="Topic note"
+                        aria-label="Open topic note"
+                        onMouseEnter={() => setHoveredNoteNodeId(ln.id)}
+                        onMouseLeave={() =>
+                          setHoveredNoteNodeId((prev) => (prev === ln.id ? null : prev))
+                        }
+                        onClick={handleBadgeClick}
+                      >
+                        <NoteIcon />
+                      </button>
+                    )}
+                    {topic.unmappedBlocks.length > 0 && (
+                      <button
+                        type="button"
+                        className="ito-badge ito-badge-unmapped"
+                        title="Preserved non-map content"
+                        aria-label="Inspect preserved blocks"
+                        onClick={handleBadgeClick}
+                      >
+                        <BlockIcon />
+                      </button>
+                    )}
+                    {firstLink !== undefined && (
+                      <button
+                        type="button"
+                        className="ito-badge ito-badge-link"
+                        title={firstLink.target}
+                        aria-label={`Open link ${firstLink.label}`}
+                        onClick={handleLinkClick}
+                      >
+                        <LinkIcon />
+                      </button>
+                    )}
+                  </span>
+                )}
+              </div>
             )}
 
-            {(topic.noteRange !== null ||
-              topic.unmappedBlocks.length > 0 ||
-              firstLink !== undefined) && (
-              <span className="ito-node-badges">
-                {topic.noteRange !== null && (
-                  <button
-                    type="button"
-                    className="ito-badge ito-badge-note"
-                    title="Topic note"
-                    aria-label="Open topic note"
-                    onMouseEnter={() => setHoveredNoteNodeId(ln.id)}
-                    onMouseLeave={() => setHoveredNoteNodeId((prev) => (prev === ln.id ? null : prev))}
-                    onClick={handleBadgeClick}
-                  >
-                    <NoteIcon />
-                  </button>
-                )}
-                {topic.unmappedBlocks.length > 0 && (
-                  <button
-                    type="button"
-                    className="ito-badge ito-badge-unmapped"
-                    title="Preserved non-map content"
-                    aria-label="Inspect preserved blocks"
-                    onClick={handleBadgeClick}
-                  >
-                    <BlockIcon />
-                  </button>
-                )}
-                {firstLink !== undefined && (
-                  <button
-                    type="button"
-                    className="ito-badge ito-badge-link"
-                    title={firstLink.target}
-                    aria-label={`Open link ${firstLink.label}`}
-                    onClick={handleLinkClick}
-                  >
-                    <LinkIcon />
-                  </button>
-                )}
-              </span>
+            {thumbnail !== undefined && (
+              <div className="ito-node-thumb-wrap">
+                <img
+                  className="ito-node-thumb"
+                  src={thumbnail.src}
+                  alt={thumbnail.alt}
+                  loading="lazy"
+                  draggable={false}
+                />
+              </div>
             )}
 
             {showNoteHover && topic.noteText !== null && (

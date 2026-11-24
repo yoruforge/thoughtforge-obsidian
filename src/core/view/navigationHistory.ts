@@ -1,22 +1,55 @@
+export interface MapHistoryAnchor {
+  readonly baseContentHash: string;
+  readonly headerLine: number;
+  readonly titleRaw: string;
+  readonly ancestorPath: readonly string[];
+  readonly ownRangeHash: string;
+  readonly preservedBlockId: string | null;
+  readonly hadDuplicateBlockId: boolean;
+  readonly hadIdenticalSibling: boolean;
+}
+
 export interface MapHistoryEntry {
   readonly filePath: string;
-  readonly targetLine?: number;
+  readonly targetAnchor?: MapHistoryAnchor;
   readonly targetSubpath?: string;
 }
 
 const MAX_HISTORY_ENTRIES = 50;
 
+function sameAnchor(a: MapHistoryAnchor | undefined, b: MapHistoryAnchor | undefined): boolean {
+  if (a === b) return true;
+  if (!a || !b) return false;
+  if (
+    a.baseContentHash !== b.baseContentHash ||
+    a.headerLine !== b.headerLine ||
+    a.titleRaw !== b.titleRaw ||
+    a.ownRangeHash !== b.ownRangeHash ||
+    a.preservedBlockId !== b.preservedBlockId ||
+    a.hadDuplicateBlockId !== b.hadDuplicateBlockId ||
+    a.hadIdenticalSibling !== b.hadIdenticalSibling ||
+    a.ancestorPath.length !== b.ancestorPath.length
+  ) {
+    return false;
+  }
+  for (let i = 0; i < a.ancestorPath.length; i += 1) {
+    if (a.ancestorPath[i] !== b.ancestorPath[i]) return false;
+  }
+  return true;
+}
+
 function isSameHistoryEntry(a: MapHistoryEntry, b: MapHistoryEntry): boolean {
   return (
     a.filePath === b.filePath &&
-    a.targetLine === b.targetLine &&
-    a.targetSubpath === b.targetSubpath
+    a.targetSubpath === b.targetSubpath &&
+    sameAnchor(a.targetAnchor, b.targetAnchor)
   );
 }
 
 /**
  * Pure per-view navigation history stack for mind-map-to-mind-map link traversal
- * with Back / Forward support, vault rename tracking, and deleted-note pruning.
+ * with Back / Forward support, structural topic anchor snapshots, vault rename tracking,
+ * and deleted-note pruning.
  */
 export class MapNavigationHistory {
   private entries: MapHistoryEntry[] = [];
@@ -69,17 +102,18 @@ export class MapNavigationHistory {
   }
 
   /**
-   * Updates the current history entry's anchor line (for example right before jumping away)
-   * so going Back restores the exact topic the user was inspecting.
+   * Updates the current history entry's structural topic anchor (for example right before
+   * jumping away) so going Back restores the exact original topic or fails closed when
+   * external edits make the original branch unidentifiable.
    */
-  updateCurrentAnchor(filePath: string, targetLine?: number): void {
+  updateCurrentAnchor(filePath: string, targetAnchor?: MapHistoryAnchor): void {
     const cur = this.current;
     if (cur === null || cur.filePath !== filePath) {
       return;
     }
     this.entries[this.cursor] = {
       filePath: cur.filePath,
-      ...(targetLine !== undefined ? { targetLine } : {}),
+      ...(targetAnchor !== undefined ? { targetAnchor } : {}),
     };
   }
 

@@ -33,8 +33,12 @@ import {
   computeSubtreeBounds,
   computeTopicNumbering,
 } from '../core/view/topicPresentation';
+import { extractNodeImageEmbeds } from '../core/view/imageEmbeds';
+import type { MapHistoryAnchor } from '../core/view/navigationHistory';
 import {
   collectAncestorIds,
+  createHistoryAnchor,
+  resolveHistoryAnchor,
   resolveTopicAtLine,
   resolveTopicBySubpath,
 } from '../core/view/topicResolver';
@@ -49,7 +53,13 @@ import {
   type SaveDraftInput,
   type SaveDraftResult,
 } from '../sync/DraftStore';
-import type { CommandDispatchOutcome } from '../sync/ports';
+import type {
+  BacklinkItem,
+  CommandDispatchOutcome,
+  NodeMetadataProvider,
+  ResolvedNodeImage,
+} from '../sync/ports';
+import type { NodeThumbnailInfo } from './DomNodeLayer';
 import {
   buildCommitRenameCommand,
   buildPatchGuard,
@@ -63,7 +73,11 @@ import {
 } from './editSession';
 import type { GuardableKeyEvent } from './imeGuard';
 import { shouldIgnoreCanvasKeyEvent } from './keyboardGuard';
-import { NodePopover, type NoteCommitOutcome } from './NodePopover';
+import {
+  NodePopover,
+  type NoteCommitOutcome,
+  type PopoverImageItem,
+} from './NodePopover';
 import { QuickStylePopover } from './QuickStylePopover';
 import { StatusBar } from './StatusBar';
 import { Toolbar } from './Toolbar';
@@ -90,6 +104,8 @@ export interface MindMapActionTriggers {
 export interface MapRevealRequest {
   readonly token: number;
   readonly filePath: string;
+  readonly fromHistory?: boolean;
+  readonly anchor?: MapHistoryAnchor;
   readonly line?: number;
   readonly subpath?: string;
 }
@@ -105,13 +121,15 @@ export interface MindMapAppProps {
   readonly forwardTitle?: string;
   readonly onNavigateBack?: () => void;
   readonly onNavigateForward?: () => void;
-  readonly onSelectedLineChange?: (line: number | undefined) => void;
+  readonly onSelectedAnchorChange?: (anchor: MapHistoryAnchor | undefined) => void;
   readonly themeMode: ResolvedThemeMode;
   readonly settings: PluginSettings;
   readonly messages: Messages;
   readonly drafts?: readonly DraftEntry[];
   readonly unpersistedDraftIds?: ReadonlySet<string>;
   readonly draftRevisions?: ReadonlyMap<string, number>;
+  readonly metadataProvider?: NodeMetadataProvider;
+  readonly metadataVersion?: number;
   readonly onSaveDraft?: (input: SaveDraftInput) => Promise<SaveDraftResult>;
   readonly onIsLatestDraftRevision?: (draftId: string, expectedRevision: number) => boolean;
   readonly onGetDraftRevision?: (draftId: string) => number | undefined;
@@ -135,6 +153,7 @@ export interface MindMapAppProps {
   readonly onReadBranchClipboard?: () => Promise<string | null>;
   readonly onOpenMarkdown: (line?: number) => void;
   readonly onOpenLink: (link: TopicLink, newTab: boolean) => void;
+  readonly onOpenVaultFile?: (vaultPath: string, newTab: boolean) => void;
   readonly onUpdateSettings?: (patch: Partial<PluginSettings>) => void;
   readonly onDispatchCommand?: (
     command: SemanticCommand,
@@ -162,6 +181,10 @@ function computeFitCamera(bounds: LayoutBounds, size: ViewportSize): CameraState
   };
 }
 
+function buildHistoryAnchor(doc: MindMapDocument, node: TopicNode): MapHistoryAnchor {
+  return createHistoryAnchor(doc, node);
+}
+
 export function MindMapApp({
   filePath,
   parseResult,
@@ -173,13 +196,15 @@ export function MindMapApp({
   forwardTitle,
   onNavigateBack,
   onNavigateForward,
-  onSelectedLineChange,
+  onSelectedAnchorChange,
   themeMode,
   settings,
   messages,
   drafts = [],
   unpersistedDraftIds,
   draftRevisions,
+  metadataProvider,
+  metadataVersion = 0,
   onSaveDraft,
   onIsLatestDraftRevision,
   onGetDraftRevision,
@@ -190,6 +215,7 @@ export function MindMapApp({
   onReadBranchClipboard,
   onOpenMarkdown,
   onOpenLink,
+  onOpenVaultFile,
   onUpdateSettings,
   onDispatchCommand,
   onUndo,
@@ -465,6 +491,71 @@ export function MindMapApp({
     [doc, settings.topicNumbering],
   );
 
+  // Resolve safe vault image embeds per node (preferring Obsidian metadataCache.embeds when fresh)
+  const resolvedImagesByNode = useMemo<ReadonlyMap<string, readonly ResolvedNodeImage[]>>(() => {
+    if (!doc || !metadataProvider || filePath.length === 0 || metadataVersion < 0) {
+      return new Map();
+    }
+    if (typeof metadataProvider.getResolvedNodeImages === 'function') {
+      return metadataProvider.getResolvedNodeImages(filePath, doc);
+    }
+    const map = new Map<string, ResolvedNodeImage[]>();
+    for (const node of doc.nodes.values()) {
+      const embeds = extractNodeImageEmbeds(node);
+      if (embeds.length === 0) continue;
+      const list: ResolvedNodeImage[] = [];
+      for (const embed of embeds) {
+        const resolvedSrc = metadataProvider.getResolvedImageSrc(filePath, embed.target);
+        if (resolvedSrc !== null) {
+          list.push({ target: embed.target, src: resolvedSrc, alt: embed.alt });
+        }
+      }
+      if (list.length > 0) {
+        map.set(node.id, list);
+      }
+    }
+    return map;
+  }, [doc, filePath, metadataProvider, metadataVersion]);
+
+  const nodeThumbnails = useMemo(() => {
+    const map = new Map<string, NodeThumbnailInfo>();
+    for (const [nodeId, list] of resolvedImagesByNode) {
+      const first = list[0];
+      if (first) {
+        map.set(nodeId, { src: first.src, alt: first.alt });
+      }
+    }
+    return map;
+  }, [resolvedImagesByNode]);
+
+  const thumbnailNodeIds = useMemo(() => new Set(nodeThumbnails.keys()), [nodeThumbnails]);
+
+  const selectedNodeForMeta =
+    doc && effectiveSelectedId !== null ? (doc.nodes.get(effectiveSelectedId) ?? null) : null;
+
+  const selectedNodeImages = useMemo<readonly PopoverImageItem[]>(() => {
+    if (!popoverOpen || !selectedNodeForMeta) {
+      return [];
+    }
+    return (resolvedImagesByNode.get(selectedNodeForMeta.id) ?? []).slice(0, 6);
+  }, [popoverOpen, selectedNodeForMeta, resolvedImagesByNode]);
+
+  const selectedNodeBacklinks = useMemo<readonly BacklinkItem[] | undefined>(() => {
+    if (!popoverOpen || !doc || !metadataProvider || filePath.length === 0 || metadataVersion < 0) {
+      return undefined;
+    }
+    const queryTarget =
+      selectedNodeForMeta !== null ? { doc, nodeId: selectedNodeForMeta.id } : undefined;
+    return metadataProvider.getBacklinks(filePath, queryTarget);
+  }, [popoverOpen, doc, selectedNodeForMeta, metadataProvider, filePath, metadataVersion]);
+
+  const metadataFreshness = useMemo<'fresh' | 'updating' | undefined>(() => {
+    if (!popoverOpen || !doc || !metadataProvider || filePath.length === 0 || metadataVersion < 0) {
+      return undefined;
+    }
+    return metadataProvider.getFreshness(filePath, doc.contentHash);
+  }, [popoverOpen, doc, metadataProvider, filePath, metadataVersion]);
+
   const visibility = useMemo(() => {
     if (!doc) return null;
     return computeVisibilityAndEmphasis(doc, {
@@ -491,8 +582,9 @@ export function MindMapApp({
       layoutMode: settings.layoutMode,
       edgeStyle: settings.edgeStyle,
       numberingLabels,
+      thumbnailNodeIds,
     });
-  }, [doc, visibility, settings.layoutMode, settings.edgeStyle, numberingLabels]);
+  }, [doc, visibility, settings.layoutMode, settings.edgeStyle, numberingLabels, thumbnailNodeIds]);
 
   const layoutRef = useRef(layout);
   layoutRef.current = layout;
@@ -543,16 +635,50 @@ export function MindMapApp({
     }
   }, [settings.layoutMode, layout]);
 
-  // Report active topic header line to host view so history Back restores the exact topic
+  // Report structural anchor of active topic to host view so history Back restores the exact topic
+  // (or fails closed to unselected when external edits shift lines or remove the original branch).
   useEffect(() => {
-    if (!onSelectedLineChange) return;
+    if (!onSelectedAnchorChange) return;
     if (!doc || effectiveSelectedId === null) {
-      onSelectedLineChange(undefined);
+      onSelectedAnchorChange(undefined);
       return;
     }
     const node = doc.nodes.get(effectiveSelectedId);
-    onSelectedLineChange(node?.headerLine);
-  }, [doc, effectiveSelectedId, onSelectedLineChange]);
+    onSelectedAnchorChange(node ? buildHistoryAnchor(doc, node) : undefined);
+  }, [doc, effectiveSelectedId, onSelectedAnchorChange]);
+
+  const captureNavigationAnchor = useCallback(
+    (newTab: boolean, sourceNodeId?: string) => {
+      if (!newTab && onSelectedAnchorChange && doc) {
+        const anchorNode =
+          sourceNodeId !== undefined
+            ? doc.nodes.get(sourceNodeId)
+            : effectiveSelectedId !== null
+              ? doc.nodes.get(effectiveSelectedId)
+              : undefined;
+        if (anchorNode) {
+          onSelectedAnchorChange(buildHistoryAnchor(doc, anchorNode));
+        }
+      }
+    },
+    [doc, effectiveSelectedId, onSelectedAnchorChange],
+  );
+
+  const handleOpenLinkFromMap = useCallback(
+    (link: TopicLink, newTab: boolean, sourceNodeId?: string) => {
+      captureNavigationAnchor(newTab, sourceNodeId);
+      onOpenLink(link, newTab);
+    },
+    [captureNavigationAnchor, onOpenLink],
+  );
+
+  const handleOpenVaultFileFromMap = useCallback(
+    (vaultPath: string, newTab: boolean, sourceNodeId?: string) => {
+      captureNavigationAnchor(newTab, sourceNodeId);
+      onOpenVaultFile?.(vaultPath, newTab);
+    },
+    [captureNavigationAnchor, onOpenVaultFile],
+  );
 
   // Process explicit reveal requests (from cursor-to-map, [[Note#Heading]] / [[Note#^blk]], or history)
   useEffect(() => {
@@ -567,14 +693,35 @@ export function MindMapApp({
     lastHandledRevealTokenRef.current = revealRequest.token;
 
     let targetId: string | null = null;
-    if (revealRequest.subpath !== undefined) {
+    let failClosedIfUnresolved = false;
+    if (revealRequest.anchor !== undefined) {
+      failClosedIfUnresolved = true;
+      targetId = resolveHistoryAnchor(doc, revealRequest.anchor);
+    } else if (revealRequest.subpath !== undefined) {
+      failClosedIfUnresolved = revealRequest.fromHistory === true;
       targetId = resolveTopicBySubpath(doc, revealRequest.subpath);
-    }
-    if (targetId === null && revealRequest.line !== undefined) {
+    } else if (revealRequest.line !== undefined) {
       targetId = resolveTopicAtLine(doc, revealRequest.line);
     }
-    const resolvedId = targetId ?? doc.rootId;
 
+    setPopoverOpen(false);
+    setStylesOpen(false);
+    setEditingSession(null);
+
+    if (targetId === null && failClosedIfUnresolved) {
+      // Fail closed: original history branch cannot be uniquely proven after external edits.
+      // Leave selection empty so Delete can NEVER remove another branch.
+      setSelectionState({
+        filePath,
+        doc,
+        nodeId: null,
+        unresolved: true,
+      });
+      pendingRevealFitNodeIdRef.current = doc.rootId;
+      return;
+    }
+
+    const resolvedId = targetId ?? doc.rootId;
     const ancestors = collectAncestorIds(doc, resolvedId);
     if (ancestors.length > 0) {
       setBaseCollapsedIds((prev) => {
@@ -589,9 +736,6 @@ export function MindMapApp({
       });
     }
 
-    setPopoverOpen(false);
-    setStylesOpen(false);
-    setEditingSession(null);
     selectNode(resolvedId, doc, filePath);
     pendingRevealFitNodeIdRef.current = resolvedId;
   }, [doc, filePath, revealRequest, selectNode]);
@@ -2019,6 +2163,7 @@ export function MindMapApp({
           matchedNodeIds={visibility.matchedNodeIds}
           effectiveCollapsedIds={visibility.effectiveCollapsedIds}
           numberingLabels={numberingLabels}
+          nodeThumbnails={nodeThumbnails}
           palette={palette}
           rainbowBranches={settings.rainbowBranches}
           colorStyle={settings.colorStyle}
@@ -2039,7 +2184,7 @@ export function MindMapApp({
             setPopoverOpen(true);
             setStylesOpen(false);
           }}
-          onOpenLink={onOpenLink}
+          onOpenLink={handleOpenLinkFromMap}
           onStartEdit={handleStartEdit}
           onCommitEdit={handleCommitEdit}
           onSplitEdit={handleSplitEdit}
@@ -2084,9 +2229,18 @@ export function MindMapApp({
             onCopyDraftText={handleCopyDraftText}
             activeTagFilter={structuredFilter.tag}
             onToggleTagFilter={handleToggleTagFilter}
+            nodeImages={selectedNodeImages}
+            backlinks={selectedNodeBacklinks}
+            metadataFreshness={metadataFreshness}
             onClose={handleClosePopover}
             onJumpToSource={(line) => onOpenMarkdown(line)}
-            onOpenLink={onOpenLink}
+            onOpenLink={(link, newTab) => handleOpenLinkFromMap(link, newTab, selectedNode.id)}
+            onOpenBacklink={
+              onOpenVaultFile
+                ? (sourcePath, newTab) =>
+                    handleOpenVaultFileFromMap(sourcePath, newTab, selectedNode.id)
+                : undefined
+            }
           />
         )}
 

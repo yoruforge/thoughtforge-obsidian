@@ -1,14 +1,124 @@
 import type { MindMapDocument, TopicNode } from '../model';
+import type { MapHistoryAnchor } from './navigationHistory';
+
+function findInlineCodeSpanEnd(raw: string, start: number): number | null {
+  let tickEnd = start;
+  while (tickEnd < raw.length && raw[tickEnd] === '`') {
+    tickEnd += 1;
+  }
+  const tickCount = tickEnd - start;
+  let i = tickEnd;
+  while (i < raw.length) {
+    if (raw[i] === '`') {
+      let runEnd = i;
+      while (runEnd < raw.length && raw[runEnd] === '`') {
+        runEnd += 1;
+      }
+      if (runEnd - i === tickCount) {
+        return runEnd;
+      }
+      i = runEnd;
+      continue;
+    }
+    i += 1;
+  }
+  return null;
+}
+
+function stripNonCodeFormatting(chunk: string): string {
+  return chunk
+    .replace(/(\*\*|~~)([^\s](?:.*?[^\s])?)\1/g, '$2')
+    .replace(/(?<![\p{L}\p{N}])__([^\s_](?:.*?[^\s_])?)__(?![\p{L}\p{N}])/gu, '$1')
+    .replace(/\*([^\s*](?:[^*]*[^\s*])?)\*/g, '$1')
+    .replace(/(?<![\p{L}\p{N}])_([^\s_](?:[^_]*[^\s_])?)_(?![\p{L}\p{N}])/gu, '$1');
+}
 
 function stripInlineFormatting(raw: string): string {
-  return raw
-    .replace(/`([^`]+)`/g, '$1')
-    .replace(/(\*\*|__|~~)(.*?)\1/g, '$2')
-    .replace(/(\*|_)(.*?)\1/g, '$2');
+  if (!raw.includes('`')) {
+    return stripNonCodeFormatting(raw);
+  }
+  let out = '';
+  let plainStart = 0;
+  let i = 0;
+  while (i < raw.length) {
+    if (raw[i] === '`') {
+      const end = findInlineCodeSpanEnd(raw, i);
+      if (end !== null) {
+        if (i > plainStart) {
+          out += stripNonCodeFormatting(raw.slice(plainStart, i));
+        }
+        let tickEnd = i;
+        while (tickEnd < end && raw[tickEnd] === '`') {
+          tickEnd += 1;
+        }
+        const tickCount = tickEnd - i;
+        let inner = raw.slice(tickEnd, end - tickCount);
+        if (
+          inner.length >= 2 &&
+          inner.startsWith(' ') &&
+          inner.endsWith(' ') &&
+          inner.trim().length > 0
+        ) {
+          inner = inner.slice(1, -1);
+        }
+        out += inner;
+        i = end;
+        plainStart = end;
+        continue;
+      }
+      while (i < raw.length && raw[i] === '`') {
+        i += 1;
+      }
+      continue;
+    }
+    i += 1;
+  }
+  if (plainStart < raw.length) {
+    out += stripNonCodeFormatting(raw.slice(plainStart));
+  }
+  return out;
+}
+
+function normalizeLiteralSegment(raw: string): string {
+  return raw.trim().replace(/\s+/g, ' ').toLowerCase();
 }
 
 function normalizeSubpathSegment(raw: string): string {
   return stripInlineFormatting(raw).trim().replace(/\s+/g, ' ').toLowerCase();
+}
+
+function sameStringSegments(a: readonly string[], b: readonly string[]): boolean {
+  if (a.length !== b.length) return false;
+  for (let i = 0; i < a.length; i += 1) {
+    if (a[i] !== b[i]) return false;
+  }
+  return true;
+}
+
+function lookupSegmentsInIndex(
+  doc: MindMapDocument,
+  index: SubpathResolverIndex,
+  segments: readonly string[],
+): string | null {
+  const leafSegment = segments[segments.length - 1];
+  if (leafSegment === undefined) return null;
+  const headingCandidates = index.headingsByLeaf.get(leafSegment);
+  if (headingCandidates) {
+    for (const node of headingCandidates) {
+      if (matchesIndexedAncestorChain(doc, index.keysByNodeId, node, segments)) {
+        return node.id;
+      }
+    }
+  }
+  const listCandidates = index.listItemsByLeaf.get(leafSegment);
+  if (listCandidates) {
+    for (const node of listCandidates) {
+      if (matchesIndexedAncestorChain(doc, index.keysByNodeId, node, segments)) {
+        return node.id;
+      }
+    }
+  }
+  return null;
 }
 
 function safeDecodeSubpath(raw: string): string {
@@ -31,28 +141,84 @@ function computeDepth(doc: MindMapDocument, node: TopicNode): number {
   return depth;
 }
 
-function nodeMatchesHeadingSegment(node: TopicNode, normalizedSegment: string): boolean {
-  if (normalizedSegment.length === 0) return false;
-  return (
-    normalizeSubpathSegment(node.displayTitle) === normalizedSegment ||
-    normalizeSubpathSegment(node.titleRaw) === normalizedSegment
-  );
+interface SubpathResolverIndex {
+  readonly blockIdExact: ReadonlyMap<string, string>;
+  readonly blockIdLower: ReadonlyMap<string, string>;
+  readonly headingsByLeaf: ReadonlyMap<string, readonly TopicNode[]>;
+  readonly listItemsByLeaf: ReadonlyMap<string, readonly TopicNode[]>;
+  readonly keysByNodeId: ReadonlyMap<string, readonly string[]>;
+  readonly resolvedCache: Map<string, string | null>;
 }
 
-function matchesAncestorChain(
+const MAX_RESOLVED_SUBPATH_CACHE = 4096;
+const subpathIndexCache = new WeakMap<MindMapDocument, SubpathResolverIndex>();
+
+function getSubpathResolverIndex(doc: MindMapDocument): SubpathResolverIndex {
+  const existing = subpathIndexCache.get(doc);
+  if (existing !== undefined) {
+    return existing;
+  }
+
+  const blockIdExact = new Map<string, string>();
+  const blockIdLower = new Map<string, string>();
+  const headingsByLeaf = new Map<string, TopicNode[]>();
+  const listItemsByLeaf = new Map<string, TopicNode[]>();
+  const keysByNodeId = new Map<string, readonly string[]>();
+
+  for (const node of doc.nodes.values()) {
+    if (node.preservedBlockId !== null) {
+      if (!blockIdExact.has(node.preservedBlockId)) {
+        blockIdExact.set(node.preservedBlockId, node.id);
+      }
+      const lower = node.preservedBlockId.toLowerCase();
+      if (!blockIdLower.has(lower)) {
+        blockIdLower.set(lower, node.id);
+      }
+    }
+
+    const normDisplay = normalizeSubpathSegment(node.displayTitle);
+    const normRaw = normalizeSubpathSegment(node.titleRaw);
+    const keys: string[] = [];
+    if (normDisplay.length > 0) keys.push(normDisplay);
+    if (normRaw.length > 0 && normRaw !== normDisplay) keys.push(normRaw);
+    keysByNodeId.set(node.id, keys);
+
+    if (node.kind === 'central-virtual') {
+      continue;
+    }
+
+    const targetMap = node.kind === 'heading' ? headingsByLeaf : listItemsByLeaf;
+    for (const key of keys) {
+      let bucket = targetMap.get(key);
+      if (!bucket) {
+        bucket = [];
+        targetMap.set(key, bucket);
+      }
+      bucket.push(node);
+    }
+  }
+
+  const index: SubpathResolverIndex = {
+    blockIdExact,
+    blockIdLower,
+    headingsByLeaf,
+    listItemsByLeaf,
+    keysByNodeId,
+    resolvedCache: new Map<string, string | null>(),
+  };
+  subpathIndexCache.set(doc, index);
+  return index;
+}
+
+function matchesIndexedAncestorChain(
   doc: MindMapDocument,
+  keysByNodeId: ReadonlyMap<string, readonly string[]>,
   node: TopicNode,
   segments: readonly string[],
 ): boolean {
-  const leafSegment = segments[segments.length - 1];
-  if (leafSegment === undefined || !nodeMatchesHeadingSegment(node, leafSegment)) {
-    return false;
-  }
-  if (segments.length === 1) {
+  if (segments.length <= 1) {
     return true;
   }
-
-  // Match preceding heading path segments in order while walking up ancestors.
   let targetIdx = segments.length - 2;
   let cursorId = node.parentId;
   const visited = new Set<string>([node.id]);
@@ -61,7 +227,8 @@ function matchesAncestorChain(
     const ancestor = doc.nodes.get(cursorId);
     if (!ancestor) break;
     const expected = segments[targetIdx];
-    if (expected !== undefined && nodeMatchesHeadingSegment(ancestor, expected)) {
+    const ancestorKeys = keysByNodeId.get(cursorId);
+    if (expected !== undefined && ancestorKeys !== undefined && ancestorKeys.includes(expected)) {
       targetIdx -= 1;
     }
     cursorId = ancestor.parentId;
@@ -113,70 +280,96 @@ export function resolveTopicAtLine(doc: MindMapDocument, line: number): string {
 /**
  * Resolves an Obsidian link subpath (`#Heading`, `#Parent#Child`, or `#^block-id`)
  * to a `TopicNode.id` inside `doc`. Returns `null` when no matching topic exists.
+ *
+ * Preserves literal `%20` by default (`decodeSubpath: false`) so `[[Headings#Phase%20One]]`
+ * selects `Phase%20One` rather than `Phase One`; callers handling raw Markdown URL subpaths
+ * opt into `{ decodeSubpath: true }`.
+ *
+ * Uses a per-document WeakMap index (`SubpathResolverIndex`) so repeated Backlinks lookups
+ * across large notes (e.g. 2,000+ headings x 100+ linking notes) run in O(1) amortized time
+ * while preserving exact nested-heading and heading-over-list precedence.
  */
-export function resolveTopicBySubpath(doc: MindMapDocument, rawSubpath: string): string | null {
-  const decoded = safeDecodeSubpath(rawSubpath).trim();
-  const stripped = decoded.startsWith('#') ? decoded.slice(1).trim() : decoded;
+export function resolveTopicBySubpath(
+  doc: MindMapDocument,
+  rawSubpath: string,
+  options?: { readonly decodeSubpath?: boolean },
+): string | null {
+  const decodeSubpath = options?.decodeSubpath ?? false;
+  const normalized = (decodeSubpath ? safeDecodeSubpath(rawSubpath) : rawSubpath).trim();
+  const stripped = normalized.startsWith('#') ? normalized.slice(1).trim() : normalized;
   if (stripped.length === 0) {
     return null;
   }
 
+  const index = getSubpathResolverIndex(doc);
+  if (index.resolvedCache.has(stripped)) {
+    return index.resolvedCache.get(stripped) ?? null;
+  }
+
+  let resolved: string | null = null;
+
   // Block ID target (`^block-id`)
   if (stripped.startsWith('^')) {
-    const targetLower = stripped.toLowerCase();
-    let caseInsensitiveMatch: string | null = null;
-    for (const node of doc.nodes.values()) {
-      if (node.preservedBlockId === null) continue;
-      if (node.preservedBlockId === stripped) {
-        return node.id;
-      }
-      if (caseInsensitiveMatch === null && node.preservedBlockId.toLowerCase() === targetLower) {
-        caseInsensitiveMatch = node.id;
+    resolved =
+      index.blockIdExact.get(stripped) ?? index.blockIdLower.get(stripped.toLowerCase()) ?? null;
+  } else {
+    // Heading / nested heading target (`Section` or `Parent#Child`).
+    // Match literal segment text first (so `_private_` matches `` `_private_` `` rather than
+    // being stripped to `private`), and fall back to emphasis-stripped segments for queries
+    // that explicitly include raw Markdown formatting (e.g. `**Sync** Engine`).
+    const rawParts = stripped
+      .split('#')
+      .map((s) => s.trim())
+      .filter((s) => s.length > 0);
+    const literalSegments = rawParts.map(normalizeLiteralSegment).filter((s) => s.length > 0);
+    resolved = lookupSegmentsInIndex(doc, index, literalSegments);
+    if (resolved === null) {
+      const strippedSegments = rawParts.map(normalizeSubpathSegment).filter((s) => s.length > 0);
+      if (strippedSegments.length > 0 && !sameStringSegments(strippedSegments, literalSegments)) {
+        resolved = lookupSegmentsInIndex(doc, index, strippedSegments);
       }
     }
-    return caseInsensitiveMatch;
   }
 
-  // Heading / nested heading target (`Section` or `Parent#Child`)
-  const segments = stripped
-    .split('#')
-    .map(normalizeSubpathSegment)
-    .filter((seg) => seg.length > 0);
-  if (segments.length === 0) {
-    return null;
+  if (index.resolvedCache.size < MAX_RESOLVED_SUBPATH_CACHE) {
+    index.resolvedCache.set(stripped, resolved);
   }
-
-  let fallbackListMatch: string | null = null;
-  for (const node of doc.nodes.values()) {
-    if (node.kind === 'central-virtual') continue;
-    if (!matchesAncestorChain(doc, node, segments)) continue;
-    if (node.kind === 'heading') {
-      return node.id;
-    }
-    if (fallbackListMatch === null) {
-      fallbackListMatch = node.id;
-    }
-  }
-  return fallbackListMatch;
+  return resolved;
 }
 
 /**
  * Splits a raw Obsidian link target (`Note#Heading`, `#^blk-1`, `folder/note.md#Sub`)
  * into its note path portion and optional subpath (without leading `#`).
+ *
+ * Preserves literal `%20` in both `pathPart` and `subpath` by default (`decodePath: false`,
+ * `decodeSubpath: decodePath`) because Obsidian wikilink targets (`[[Source%20X#Phase%20One]]`)
+ * and `metadataCache` `cache.links`/`cache.embeds` treat filenames and headings literally;
+ * callers handling raw Markdown URL targets (`[label](path%20name.md#Heading%201)`) opt into
+ * `{ decodePath: true }`.
  */
-export function splitLinkTargetSubpath(rawTarget: string): {
+export function splitLinkTargetSubpath(
+  rawTarget: string,
+  options?: { readonly decodePath?: boolean; readonly decodeSubpath?: boolean },
+): {
   readonly pathPart: string;
   readonly subpath: string | undefined;
 } {
+  const decodePath = options?.decodePath ?? false;
+  const decodeSubpath = options?.decodeSubpath ?? decodePath;
   const hashIndex = rawTarget.indexOf('#');
   if (hashIndex < 0) {
-    return { pathPart: safeDecodeSubpath(rawTarget).trim(), subpath: undefined };
+    const trimmed = rawTarget.trim();
+    return {
+      pathPart: decodePath ? safeDecodeSubpath(trimmed).trim() : trimmed,
+      subpath: undefined,
+    };
   }
-  const pathPart = safeDecodeSubpath(rawTarget.slice(0, hashIndex)).trim();
+  const rawPath = rawTarget.slice(0, hashIndex).trim();
   const rawSub = rawTarget.slice(hashIndex + 1).trim();
+  const decodedSub = decodeSubpath ? safeDecodeSubpath(rawSub).trim() : rawSub;
   return {
-    pathPart,
-    subpath: rawSub.length > 0 ? rawSub : undefined,
+    pathPart: decodePath ? safeDecodeSubpath(rawPath).trim() : rawPath,
+    subpath: decodedSub.length > 0 ? decodedSub : undefined,
   };
 }
 
@@ -194,4 +387,154 @@ export function collectAncestorIds(doc: MindMapDocument, nodeId: string): readon
     cursor = doc.nodes.get(cursor)?.parentId ?? null;
   }
   return ancestors;
+}
+
+function buildAncestorTitlePath(doc: MindMapDocument, node: TopicNode): readonly string[] {
+  const segments: string[] = [];
+  const visited = new Set<string>([node.id]);
+  let cursor = node.parentId;
+  while (cursor !== null && !visited.has(cursor)) {
+    visited.add(cursor);
+    const parent = doc.nodes.get(cursor);
+    if (!parent) break;
+    segments.push(parent.titleRaw);
+    cursor = parent.parentId;
+  }
+  segments.reverse();
+  return segments;
+}
+
+function sameStringList(a: readonly string[], b: readonly string[]): boolean {
+  if (a.length !== b.length) return false;
+  for (let i = 0; i < a.length; i += 1) {
+    if (a[i] !== b[i]) return false;
+  }
+  return true;
+}
+
+/**
+ * Captures a fail-closed structural anchor snapshot for `node` inside `doc` (used when
+ * recording history Back/Forward return points). Checks document-wide uniqueness of both
+ * `preservedBlockId` (case-insensitive) and structural identity `(ancestorPath, titleRaw,
+ * ownRangeHash)` in a single pass.
+ */
+export function createHistoryAnchor(doc: MindMapDocument, node: TopicNode): MapHistoryAnchor {
+  const targetAncestorPath = buildAncestorTitlePath(doc, node);
+  const targetBlockLower = node.preservedBlockId?.toLowerCase() ?? null;
+
+  let hadDuplicateBlockId = false;
+  let hadIdenticalSibling = false;
+
+  for (const other of doc.nodes.values()) {
+    if (other.id === node.id) continue;
+    if (
+      targetBlockLower !== null &&
+      other.preservedBlockId !== null &&
+      other.preservedBlockId.toLowerCase() === targetBlockLower
+    ) {
+      hadDuplicateBlockId = true;
+    }
+    if (
+      !hadIdenticalSibling &&
+      other.titleRaw === node.titleRaw &&
+      other.ownRangeHash === node.ownRangeHash &&
+      sameStringList(buildAncestorTitlePath(doc, other), targetAncestorPath)
+    ) {
+      hadIdenticalSibling = true;
+    }
+    if (hadDuplicateBlockId && hadIdenticalSibling) {
+      break;
+    }
+  }
+
+  return {
+    baseContentHash: doc.contentHash,
+    headerLine: node.headerLine,
+    titleRaw: node.titleRaw,
+    ancestorPath: targetAncestorPath,
+    ownRangeHash: node.ownRangeHash,
+    preservedBlockId: node.preservedBlockId,
+    hadDuplicateBlockId,
+    hadIdenticalSibling,
+  };
+}
+
+/**
+ * Strictly fail-closed structural resolver for history Back/Forward return anchors.
+ * - Unchanged document (`contentHash === baseContentHash`): exact `headerLine` + `titleRaw` match.
+ * - Modified document:
+ *   1. If an explicit Obsidian block ID was captured (`preservedBlockId !== null`), matches ONLY
+ *      when that exact block ID is unique in `doc` AND still matches the original topic's
+ *      `titleRaw` (preventing line-shift mis-selection onto a different sibling like `Prior`).
+ *   2. Otherwise (no block ID), requires `!hadIdenticalSibling` and a unique topic matching exact
+ *      `ancestorPath`, `titleRaw`, `ownRangeHash`, and `preservedBlockId === null`.
+ * - Returns `null` whenever the original topic cannot be uniquely proven so selection stays empty
+ *   and destructive commands like `Delete` cannot touch another branch.
+ */
+export function resolveHistoryAnchor(
+  doc: MindMapDocument,
+  anchor: MapHistoryAnchor,
+): string | null {
+  if (doc.contentHash === anchor.baseContentHash) {
+    for (const node of doc.nodes.values()) {
+      if (node.kind === 'central-virtual') continue;
+      if (node.headerLine === anchor.headerLine && node.titleRaw === anchor.titleRaw) {
+        return node.id;
+      }
+    }
+    if (anchor.headerLine === 0) {
+      const root = doc.nodes.get(doc.rootId);
+      if (root && root.titleRaw === anchor.titleRaw) {
+        return root.id;
+      }
+    }
+    return null;
+  }
+
+  // Document changed while user was away: never fall back to raw line number!
+  if (anchor.preservedBlockId !== null) {
+    // Fail closed if this block ID was already duplicated anywhere in the document when history
+    // was recorded (e.g. two branches under different parents sharing `^copied`): deleting the
+    // original branch must NEVER transfer selection onto the surviving duplicate!
+    if (anchor.hadDuplicateBlockId) {
+      return null;
+    }
+    const targetLower = anchor.preservedBlockId.toLowerCase();
+    const blockMatches: TopicNode[] = [];
+    for (const node of doc.nodes.values()) {
+      if (
+        node.preservedBlockId !== null &&
+        node.preservedBlockId.toLowerCase() === targetLower
+      ) {
+        blockMatches.push(node);
+      }
+    }
+    if (
+      blockMatches.length === 1 &&
+      blockMatches[0] &&
+      blockMatches[0].preservedBlockId === anchor.preservedBlockId &&
+      blockMatches[0].titleRaw === anchor.titleRaw
+    ) {
+      return blockMatches[0].id;
+    }
+    return null;
+  }
+
+  if (anchor.hadIdenticalSibling) {
+    return null;
+  }
+
+  const structuralMatches: TopicNode[] = [];
+  for (const node of doc.nodes.values()) {
+    if (node.kind === 'central-virtual') continue;
+    if (
+      node.titleRaw === anchor.titleRaw &&
+      node.ownRangeHash === anchor.ownRangeHash &&
+      node.preservedBlockId === null &&
+      sameStringList(buildAncestorTitlePath(doc, node), anchor.ancestorPath)
+    ) {
+      structuralMatches.push(node);
+    }
+  }
+  return structuralMatches.length === 1 && structuralMatches[0] ? structuralMatches[0].id : null;
 }

@@ -1,14 +1,28 @@
 import { describe, expect, it } from 'vitest';
-import { MapNavigationHistory } from '../../src/core/view/navigationHistory';
+import {
+  MapNavigationHistory,
+  type MapHistoryAnchor,
+} from '../../src/core/view/navigationHistory';
+
+const SAMPLE_ANCHOR: MapHistoryAnchor = {
+  baseContentHash: 'hash-a',
+  headerLine: 12,
+  titleRaw: 'Link [[b]]',
+  ancestorPath: ['Root'],
+  ownRangeHash: 'own-12',
+  preservedBlockId: '^selected-link',
+  hadDuplicateBlockId: false,
+  hadIdenticalSibling: false,
+};
 
 describe('MapNavigationHistory (M4-a Back/Forward stack)', () => {
-  it('records visits, updates current anchor before jump, steps back/forward, and truncates forward branch on new visit', () => {
+  it('records visits, updates current structural anchor before jump, steps back/forward, and truncates forward branch on new visit', () => {
     const history = new MapNavigationHistory();
     expect(history.canGoBack()).toBe(false);
     expect(history.canGoForward()).toBe(false);
 
     history.recordVisit({ filePath: 'a.md' });
-    history.updateCurrentAnchor('a.md', 12);
+    history.updateCurrentAnchor('a.md', SAMPLE_ANCHOR);
     history.recordVisit({ filePath: 'b.md', targetSubpath: 'Section 1' });
     history.recordVisit({ filePath: 'c.md' });
 
@@ -20,7 +34,7 @@ describe('MapNavigationHistory (M4-a Back/Forward stack)', () => {
     expect(history.canGoForward()).toBe(true);
     expect(history.peekForward()).toEqual({ filePath: 'c.md' });
 
-    expect(history.stepBack()).toEqual({ filePath: 'a.md', targetLine: 12 });
+    expect(history.stepBack()).toEqual({ filePath: 'a.md', targetAnchor: SAMPLE_ANCHOR });
     expect(history.canGoBack()).toBe(false);
 
     expect(history.stepForward()).toEqual({ filePath: 'b.md', targetSubpath: 'Section 1' });
@@ -33,18 +47,24 @@ describe('MapNavigationHistory (M4-a Back/Forward stack)', () => {
 
   it('tracks file renames and prunes deleted files while collapsing adjacent duplicates', () => {
     const history = new MapNavigationHistory();
-    history.recordVisit({ filePath: 'a.md', targetLine: 3 });
+    history.recordVisit({ filePath: 'a.md', targetAnchor: SAMPLE_ANCHOR });
     history.recordVisit({ filePath: 'b.md' });
-    history.recordVisit({ filePath: 'a.md', targetLine: 3 });
+    history.recordVisit({ filePath: 'a.md', targetAnchor: SAMPLE_ANCHOR });
 
     history.renamePath('a.md', 'folder/a-renamed.md');
-    expect(history.current).toEqual({ filePath: 'folder/a-renamed.md', targetLine: 3 });
+    expect(history.current).toEqual({
+      filePath: 'folder/a-renamed.md',
+      targetAnchor: SAMPLE_ANCHOR,
+    });
     expect(history.peekBack()).toEqual({ filePath: 'b.md' });
 
     // Removing middle 'b.md' collapses adjacent identical 'folder/a-renamed.md' entries
     history.removePath('b.md');
     expect(history.length).toBe(1);
-    expect(history.current).toEqual({ filePath: 'folder/a-renamed.md', targetLine: 3 });
+    expect(history.current).toEqual({
+      filePath: 'folder/a-renamed.md',
+      targetAnchor: SAMPLE_ANCHOR,
+    });
     expect(history.canGoBack()).toBe(false);
     expect(history.canGoForward()).toBe(false);
   });
