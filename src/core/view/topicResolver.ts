@@ -1,15 +1,124 @@
 import type { MindMapDocument, TopicNode } from '../model';
 import type { MapHistoryAnchor } from './navigationHistory';
 
+function findInlineCodeSpanEnd(raw: string, start: number): number | null {
+  let tickEnd = start;
+  while (tickEnd < raw.length && raw[tickEnd] === '`') {
+    tickEnd += 1;
+  }
+  const tickCount = tickEnd - start;
+  let i = tickEnd;
+  while (i < raw.length) {
+    if (raw[i] === '`') {
+      let runEnd = i;
+      while (runEnd < raw.length && raw[runEnd] === '`') {
+        runEnd += 1;
+      }
+      if (runEnd - i === tickCount) {
+        return runEnd;
+      }
+      i = runEnd;
+      continue;
+    }
+    i += 1;
+  }
+  return null;
+}
+
+function stripNonCodeFormatting(chunk: string): string {
+  return chunk
+    .replace(/(\*\*|~~)([^\s](?:.*?[^\s])?)\1/g, '$2')
+    .replace(/(?<![\p{L}\p{N}])__([^\s_](?:.*?[^\s_])?)__(?![\p{L}\p{N}])/gu, '$1')
+    .replace(/\*([^\s*](?:[^*]*[^\s*])?)\*/g, '$1')
+    .replace(/(?<![\p{L}\p{N}])_([^\s_](?:[^_]*[^\s_])?)_(?![\p{L}\p{N}])/gu, '$1');
+}
+
 function stripInlineFormatting(raw: string): string {
-  return raw
-    .replace(/`([^`]+)`/g, '$1')
-    .replace(/(\*\*|__|~~)(.*?)\1/g, '$2')
-    .replace(/(\*|_)(.*?)\1/g, '$2');
+  if (!raw.includes('`')) {
+    return stripNonCodeFormatting(raw);
+  }
+  let out = '';
+  let plainStart = 0;
+  let i = 0;
+  while (i < raw.length) {
+    if (raw[i] === '`') {
+      const end = findInlineCodeSpanEnd(raw, i);
+      if (end !== null) {
+        if (i > plainStart) {
+          out += stripNonCodeFormatting(raw.slice(plainStart, i));
+        }
+        let tickEnd = i;
+        while (tickEnd < end && raw[tickEnd] === '`') {
+          tickEnd += 1;
+        }
+        const tickCount = tickEnd - i;
+        let inner = raw.slice(tickEnd, end - tickCount);
+        if (
+          inner.length >= 2 &&
+          inner.startsWith(' ') &&
+          inner.endsWith(' ') &&
+          inner.trim().length > 0
+        ) {
+          inner = inner.slice(1, -1);
+        }
+        out += inner;
+        i = end;
+        plainStart = end;
+        continue;
+      }
+      while (i < raw.length && raw[i] === '`') {
+        i += 1;
+      }
+      continue;
+    }
+    i += 1;
+  }
+  if (plainStart < raw.length) {
+    out += stripNonCodeFormatting(raw.slice(plainStart));
+  }
+  return out;
+}
+
+function normalizeLiteralSegment(raw: string): string {
+  return raw.trim().replace(/\s+/g, ' ').toLowerCase();
 }
 
 function normalizeSubpathSegment(raw: string): string {
   return stripInlineFormatting(raw).trim().replace(/\s+/g, ' ').toLowerCase();
+}
+
+function sameStringSegments(a: readonly string[], b: readonly string[]): boolean {
+  if (a.length !== b.length) return false;
+  for (let i = 0; i < a.length; i += 1) {
+    if (a[i] !== b[i]) return false;
+  }
+  return true;
+}
+
+function lookupSegmentsInIndex(
+  doc: MindMapDocument,
+  index: SubpathResolverIndex,
+  segments: readonly string[],
+): string | null {
+  const leafSegment = segments[segments.length - 1];
+  if (leafSegment === undefined) return null;
+  const headingCandidates = index.headingsByLeaf.get(leafSegment);
+  if (headingCandidates) {
+    for (const node of headingCandidates) {
+      if (matchesIndexedAncestorChain(doc, index.keysByNodeId, node, segments)) {
+        return node.id;
+      }
+    }
+  }
+  const listCandidates = index.listItemsByLeaf.get(leafSegment);
+  if (listCandidates) {
+    for (const node of listCandidates) {
+      if (matchesIndexedAncestorChain(doc, index.keysByNodeId, node, segments)) {
+        return node.id;
+      }
+    }
+  }
+  return null;
 }
 
 function safeDecodeSubpath(raw: string): string {
@@ -204,32 +313,20 @@ export function resolveTopicBySubpath(
     resolved =
       index.blockIdExact.get(stripped) ?? index.blockIdLower.get(stripped.toLowerCase()) ?? null;
   } else {
-    // Heading / nested heading target (`Section` or `Parent#Child`)
-    const segments = stripped
+    // Heading / nested heading target (`Section` or `Parent#Child`).
+    // Match literal segment text first (so `_private_` matches `` `_private_` `` rather than
+    // being stripped to `private`), and fall back to emphasis-stripped segments for queries
+    // that explicitly include raw Markdown formatting (e.g. `**Sync** Engine`).
+    const rawParts = stripped
       .split('#')
-      .map(normalizeSubpathSegment)
-      .filter((seg) => seg.length > 0);
-    const leafSegment = segments[segments.length - 1];
-    if (leafSegment !== undefined) {
-      const headingCandidates = index.headingsByLeaf.get(leafSegment);
-      if (headingCandidates) {
-        for (const node of headingCandidates) {
-          if (matchesIndexedAncestorChain(doc, index.keysByNodeId, node, segments)) {
-            resolved = node.id;
-            break;
-          }
-        }
-      }
-      if (resolved === null) {
-        const listCandidates = index.listItemsByLeaf.get(leafSegment);
-        if (listCandidates) {
-          for (const node of listCandidates) {
-            if (matchesIndexedAncestorChain(doc, index.keysByNodeId, node, segments)) {
-              resolved = node.id;
-              break;
-            }
-          }
-        }
+      .map((s) => s.trim())
+      .filter((s) => s.length > 0);
+    const literalSegments = rawParts.map(normalizeLiteralSegment).filter((s) => s.length > 0);
+    resolved = lookupSegmentsInIndex(doc, index, literalSegments);
+    if (resolved === null) {
+      const strippedSegments = rawParts.map(normalizeSubpathSegment).filter((s) => s.length > 0);
+      if (strippedSegments.length > 0 && !sameStringSegments(strippedSegments, literalSegments)) {
+        resolved = lookupSegmentsInIndex(doc, index, strippedSegments);
       }
     }
   }

@@ -114,4 +114,26 @@ describe('backlinks (M4-b exact topic resolution & deterministic sorting)', () =
     // Indexed WeakMap lookup should stay well under 250ms even on slow CI runners (previously ~1,170ms)
     expect(elapsedMs).toBeLessThan(250);
   });
+
+  it('distinguishes intraword underscore headings in direct backlinks regardless of heading order (Codex #5cb909c4)', () => {
+    const doc1 = parseOk('# Target\n## buildapiv2\n## build_api_v2\n');
+    const plain1 = [...doc1.nodes.values()].find((n) => n.titleRaw === 'buildapiv2');
+    const under1 = [...doc1.nodes.values()].find((n) => n.titleRaw === 'build_api_v2');
+    expect(plain1 && under1).toBeTruthy();
+    if (!plain1 || !under1) return;
+    expect(doesLinkTargetTopicNode(doc1, 'Target#build_api_v2', under1.id)).toBe(true);
+    expect(doesLinkTargetTopicNode(doc1, 'Target#build_api_v2', plain1.id)).toBe(false);
+    expect(doesLinkTargetTopicNode(doc1, 'Target#buildapiv2', plain1.id)).toBe(true);
+    expect(doesLinkTargetTopicNode(doc1, 'Target#buildapiv2', under1.id)).toBe(false);
+
+    const doc2 = parseOk('# Target\n## build_api_v2\n## buildapiv2\n');
+    const under2 = [...doc2.nodes.values()].find((n) => n.titleRaw === 'build_api_v2');
+    const plain2 = [...doc2.nodes.values()].find((n) => n.titleRaw === 'buildapiv2');
+    expect(under2 && plain2).toBeTruthy();
+    if (!under2 || !plain2) return;
+    expect(doesLinkTargetTopicNode(doc2, 'Target#build_api_v2', under2.id)).toBe(true);
+    expect(doesLinkTargetTopicNode(doc2, 'Target#build_api_v2', plain2.id)).toBe(false);
+    expect(doesLinkTargetTopicNode(doc2, 'Target#buildapiv2', plain2.id)).toBe(true);
+    expect(doesLinkTargetTopicNode(doc2, 'Target#buildapiv2', under2.id)).toBe(false);
+  });
 });

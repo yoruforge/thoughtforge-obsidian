@@ -235,4 +235,58 @@ describe('topicResolver (M4-a cursor-to-map & link subpath resolution)', () => {
     );
     expect(resolveHistoryAnchor(afterDeleteCaseFirst, caseAnchor)).toBeNull();
   });
+
+  it('preserves intraword underscores in heading resolution regardless of heading order (Codex #5cb909c4)', () => {
+    // Order 1: non-underscored heading comes first
+    const doc1 = parseOk('# Root\n## buildapiv2\n## build_api_v2\n');
+    const plain1 = [...doc1.nodes.values()].find((n) => n.titleRaw === 'buildapiv2');
+    const under1 = [...doc1.nodes.values()].find((n) => n.titleRaw === 'build_api_v2');
+    expect(plain1 && under1).toBeTruthy();
+    if (!plain1 || !under1) return;
+    expect(resolveTopicBySubpath(doc1, 'build_api_v2')).toBe(under1.id);
+    expect(resolveTopicBySubpath(doc1, 'buildapiv2')).toBe(plain1.id);
+
+    // Order 2: underscored heading comes first
+    const doc2 = parseOk('# Root\n## build_api_v2\n## buildapiv2\n');
+    const under2 = [...doc2.nodes.values()].find((n) => n.titleRaw === 'build_api_v2');
+    const plain2 = [...doc2.nodes.values()].find((n) => n.titleRaw === 'buildapiv2');
+    expect(under2 && plain2).toBeTruthy();
+    if (!under2 || !plain2) return;
+    expect(resolveTopicBySubpath(doc2, 'build_api_v2')).toBe(under2.id);
+    expect(resolveTopicBySubpath(doc2, 'buildapiv2')).toBe(plain2.id);
+
+    // Double intraword underscores also stay distinct
+    const docDouble = parseOk('# Root\n## foobarbaz\n## foo__bar__baz\n');
+    const doublePlain = [...docDouble.nodes.values()].find((n) => n.titleRaw === 'foobarbaz');
+    const doubleUnder = [...docDouble.nodes.values()].find((n) => n.titleRaw === 'foo__bar__baz');
+    expect(doublePlain && doubleUnder).toBeTruthy();
+    if (!doublePlain || !doubleUnder) return;
+    expect(resolveTopicBySubpath(docDouble, 'foo__bar__baz')).toBe(doubleUnder.id);
+    expect(resolveTopicBySubpath(docDouble, 'foobarbaz')).toBe(doublePlain.id);
+
+    // Genuine emphasis, code spans containing underscores, and spaced asterisks
+    const fmtDoc = parseOk(
+      [
+        '# Root',
+        '## __Bold__ and _Italic_',
+        '## `_private_`',
+        '## **Sync** Engine',
+        '## a * b * c',
+        '',
+      ].join('\n'),
+    );
+    const boldItalic = [...fmtDoc.nodes.values()].find(
+      (n) => n.titleRaw === '__Bold__ and _Italic_',
+    );
+    const codeUnder = [...fmtDoc.nodes.values()].find((n) => n.titleRaw === '`_private_`');
+    const syncEngine = [...fmtDoc.nodes.values()].find((n) => n.titleRaw === '**Sync** Engine');
+    const mathMul = [...fmtDoc.nodes.values()].find((n) => n.titleRaw === 'a * b * c');
+    expect(boldItalic && codeUnder && syncEngine && mathMul).toBeTruthy();
+    if (!boldItalic || !codeUnder || !syncEngine || !mathMul) return;
+    expect(resolveTopicBySubpath(fmtDoc, 'Bold and Italic')).toBe(boldItalic.id);
+    expect(resolveTopicBySubpath(fmtDoc, '_private_')).toBe(codeUnder.id);
+    expect(resolveTopicBySubpath(fmtDoc, 'private')).toBeNull();
+    expect(resolveTopicBySubpath(fmtDoc, 'Sync Engine')).toBe(syncEngine.id);
+    expect(resolveTopicBySubpath(fmtDoc, 'a * b * c')).toBe(mathMul.id);
+  });
 });
