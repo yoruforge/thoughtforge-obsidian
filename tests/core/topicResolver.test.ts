@@ -289,4 +289,40 @@ describe('topicResolver (M4-a cursor-to-map & link subpath resolution)', () => {
     expect(resolveTopicBySubpath(fmtDoc, 'Sync Engine')).toBe(syncEngine.id);
     expect(resolveTopicBySubpath(fmtDoc, 'a * b * c')).toBe(mathMul.id);
   });
+
+  it('strips emphasis wrapping inline code spans while protecting code interiors (Codex #7822c46c)', () => {
+    const doc = parseOk(
+      [
+        '# Headings',
+        '## **Use `foo` now**',
+        '## **`foo`**',
+        '## _Use `foo` now_',
+        '## **Use `_private_` now**',
+        '',
+      ].join('\n'),
+    );
+    const useFooBold = [...doc.nodes.values()].find((n) => n.titleRaw === '**Use `foo` now**');
+    const fooOnlyBold = [...doc.nodes.values()].find((n) => n.titleRaw === '**`foo`**');
+    const useFooItalic = [...doc.nodes.values()].find((n) => n.titleRaw === '_Use `foo` now_');
+    const usePrivateBold = [...doc.nodes.values()].find(
+      (n) => n.titleRaw === '**Use `_private_` now**',
+    );
+    expect(useFooBold && fooOnlyBold && useFooItalic && usePrivateBold).toBeTruthy();
+    if (!useFooBold || !fooOnlyBold || !useFooItalic || !usePrivateBold) return;
+
+    expect(resolveTopicBySubpath(doc, 'Use foo now')).toBe(useFooBold.id);
+    expect(resolveTopicBySubpath(doc, 'foo')).toBe(fooOnlyBold.id);
+    expect(resolveTopicBySubpath(doc, 'Use foo now')).toBe(useFooBold.id);
+    expect(resolveTopicBySubpath(doc, 'Use _private_ now')).toBe(usePrivateBold.id);
+    expect(resolveTopicBySubpath(doc, 'Use private now')).toBeNull();
+
+    // First italic heading when checked independently also resolves cleanly
+    const italicOnly = parseOk('# Root\n## _Use `foo` now_\n');
+    const italicNode = [...italicOnly.nodes.values()].find(
+      (n) => n.titleRaw === '_Use `foo` now_',
+    );
+    expect(italicNode).toBeDefined();
+    if (!italicNode) return;
+    expect(resolveTopicBySubpath(italicOnly, 'Use foo now')).toBe(italicNode.id);
+  });
 });

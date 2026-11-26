@@ -108,4 +108,24 @@ describe('topicPresentation (M2-ui helpers)', () => {
     expect(subBounds.maxY).toBeGreaterThan(subBounds.minY);
     expect(subBounds.maxX - subBounds.minX).toBeLessThanOrEqual(layout.bounds.maxX - layout.bounds.minX);
   });
+
+  it('tokenizes Markdown links with parens and angle brackets cleanly and skips tags inside multi-backtick code spans', () => {
+    const parenSegs = tokenizeTopicTitle('[Plan](Plan(1).md) #work');
+    expect(parenSegs).toEqual([
+      { kind: 'text', text: 'Plan ' },
+      { kind: 'tag', text: '#work' },
+    ]);
+    expect(extractTopicTags('[Plan](Plan(1).md) #work')).toEqual(['#work']);
+
+    const angleSegs = tokenizeTopicTitle('[Plan](<Plan One.md#notatag>)');
+    expect(angleSegs).toEqual([{ kind: 'text', text: 'Plan' }]);
+    expect(extractTopicTags('[Plan](<Plan One.md#notatag>)')).toEqual([]);
+
+    const multiBacktickSegs = tokenizeTopicTitle('``code ` #notatag`` and #realtag');
+    expect(multiBacktickSegs).toEqual([
+      { kind: 'text', text: '``code ` #notatag`` and ' },
+      { kind: 'tag', text: '#realtag' },
+    ]);
+    expect(extractTopicTags('``code ` #notatag`` and #realtag')).toEqual(['#realtag']);
+  });
 });

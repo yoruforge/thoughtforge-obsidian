@@ -245,4 +245,44 @@ describe('parseMarkdownToMap', () => {
       true,
     );
   });
+
+  it('parses Markdown links with balanced parentheses and angle-bracket destinations while ignoring code spans (Codex #5cb909c4 / #7822c46c)', () => {
+    const md = [
+      '# Root',
+      '- [Plan Paren](Plan(1).md)',
+      '- [Plan Space](<Plan One.md>)',
+      '- [Plan Quoted](<Plan (2).md> "title")',
+      '- Code `[Fake](ignored.md)` real [Real](<Sub Dir/My (Note).md>)',
+      '',
+    ].join('\n');
+    const res = parseMarkdownToMap(md, 'Root');
+    expect(res.status).toBe('ok');
+    if (res.status !== 'ok') return;
+
+    const getByDisplay = (label: string) =>
+      [...res.document.nodes.values()].find((n) => n.displayTitle.includes(label));
+
+    const parenNode = getByDisplay('Plan Paren');
+    const spaceNode = getByDisplay('Plan Space');
+    const quotedNode = getByDisplay('Plan Quoted');
+    const codeAndReal = getByDisplay('Code');
+    expect(parenNode && spaceNode && quotedNode && codeAndReal).toBeTruthy();
+    if (!parenNode || !spaceNode || !quotedNode || !codeAndReal) return;
+
+    expect(parenNode.displayTitle).toBe('Plan Paren');
+    expect(parenNode.links).toEqual([{ kind: 'markdown', target: 'Plan(1).md', label: 'Plan Paren' }]);
+
+    expect(spaceNode.displayTitle).toBe('Plan Space');
+    expect(spaceNode.links).toEqual([{ kind: 'markdown', target: 'Plan One.md', label: 'Plan Space' }]);
+
+    expect(quotedNode.displayTitle).toBe('Plan Quoted');
+    expect(quotedNode.links).toEqual([
+      { kind: 'markdown', target: 'Plan (2).md', label: 'Plan Quoted' },
+    ]);
+
+    expect(codeAndReal.displayTitle).toBe('Code `[Fake](ignored.md)` real Real');
+    expect(codeAndReal.links).toEqual([
+      { kind: 'markdown', target: 'Sub Dir/My (Note).md', label: 'Real' },
+    ]);
+  });
 });

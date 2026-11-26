@@ -1,29 +1,6 @@
 import type { MindMapDocument, TopicNode } from '../model';
+import { findCodeSpanEnd } from '../parser/inlineMarkdown';
 import type { MapHistoryAnchor } from './navigationHistory';
-
-function findInlineCodeSpanEnd(raw: string, start: number): number | null {
-  let tickEnd = start;
-  while (tickEnd < raw.length && raw[tickEnd] === '`') {
-    tickEnd += 1;
-  }
-  const tickCount = tickEnd - start;
-  let i = tickEnd;
-  while (i < raw.length) {
-    if (raw[i] === '`') {
-      let runEnd = i;
-      while (runEnd < raw.length && raw[runEnd] === '`') {
-        runEnd += 1;
-      }
-      if (runEnd - i === tickCount) {
-        return runEnd;
-      }
-      i = runEnd;
-      continue;
-    }
-    i += 1;
-  }
-  return null;
-}
 
 function stripNonCodeFormatting(chunk: string): string {
   return chunk
@@ -37,16 +14,24 @@ function stripInlineFormatting(raw: string): string {
   if (!raw.includes('`')) {
     return stripNonCodeFormatting(raw);
   }
-  let out = '';
-  let plainStart = 0;
+  // Protect arbitrary-length code spans with collision-free sentinels so outer emphasis
+  // like `**Use `foo` now**` still strips while inner `_` / `*` characters stay intact.
+  let openSentinel = '\uE000';
+  while (raw.includes(openSentinel)) {
+    openSentinel += '\uE000';
+  }
+  let closeSentinel = '\uE001';
+  while (raw.includes(closeSentinel)) {
+    closeSentinel += '\uE001';
+  }
+
+  const codeSpans: string[] = [];
+  let masked = '';
   let i = 0;
   while (i < raw.length) {
     if (raw[i] === '`') {
-      const end = findInlineCodeSpanEnd(raw, i);
+      const end = findCodeSpanEnd(raw, i);
       if (end !== null) {
-        if (i > plainStart) {
-          out += stripNonCodeFormatting(raw.slice(plainStart, i));
-        }
         let tickEnd = i;
         while (tickEnd < end && raw[tickEnd] === '`') {
           tickEnd += 1;
@@ -61,22 +46,46 @@ function stripInlineFormatting(raw: string): string {
         ) {
           inner = inner.slice(1, -1);
         }
-        out += inner;
+        const idx = codeSpans.length;
+        codeSpans.push(inner);
+        masked += `${openSentinel}${idx}${closeSentinel}`;
         i = end;
-        plainStart = end;
         continue;
       }
       while (i < raw.length && raw[i] === '`') {
+        masked += '`';
         i += 1;
       }
       continue;
     }
+    masked += raw[i] ?? '';
     i += 1;
   }
-  if (plainStart < raw.length) {
-    out += stripNonCodeFormatting(raw.slice(plainStart));
+
+  const stripped = stripNonCodeFormatting(masked);
+  if (codeSpans.length === 0) {
+    return stripped;
   }
-  return out;
+  let restored = '';
+  let pos = 0;
+  while (pos < stripped.length) {
+    const startIdx = stripped.indexOf(openSentinel, pos);
+    if (startIdx < 0) {
+      restored += stripped.slice(pos);
+      break;
+    }
+    restored += stripped.slice(pos, startIdx);
+    const numStart = startIdx + openSentinel.length;
+    const endIdx = stripped.indexOf(closeSentinel, numStart);
+    if (endIdx < 0) {
+      restored += stripped.slice(startIdx);
+      break;
+    }
+    const idx = Number.parseInt(stripped.slice(numStart, endIdx), 10);
+    restored += codeSpans[idx] ?? '';
+    pos = endIdx + closeSentinel.length;
+  }
+  return restored;
 }
 
 function normalizeLiteralSegment(raw: string): string {
