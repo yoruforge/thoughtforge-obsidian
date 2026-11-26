@@ -1,29 +1,6 @@
 import type { MindMapDocument, TopicNode } from '../model';
+import { findCodeSpanEnd } from '../parser/inlineMarkdown';
 import type { MapHistoryAnchor } from './navigationHistory';
-
-function findInlineCodeSpanEnd(raw: string, start: number): number | null {
-  let tickEnd = start;
-  while (tickEnd < raw.length && raw[tickEnd] === '`') {
-    tickEnd += 1;
-  }
-  const tickCount = tickEnd - start;
-  let i = tickEnd;
-  while (i < raw.length) {
-    if (raw[i] === '`') {
-      let runEnd = i;
-      while (runEnd < raw.length && raw[runEnd] === '`') {
-        runEnd += 1;
-      }
-      if (runEnd - i === tickCount) {
-        return runEnd;
-      }
-      i = runEnd;
-      continue;
-    }
-    i += 1;
-  }
-  return null;
-}
 
 function stripNonCodeFormatting(chunk: string): string {
   return chunk
@@ -34,19 +11,29 @@ function stripNonCodeFormatting(chunk: string): string {
 }
 
 function stripInlineFormatting(raw: string): string {
-  if (!raw.includes('`')) {
-    return stripNonCodeFormatting(raw);
-  }
-  let out = '';
-  let plainStart = 0;
+  // Mask code, escaped punctuation and any literal marker in the same ordered list.
+  // Each marker in the formatted string therefore restores exactly one original segment.
+  const marker = '\uE000';
+  const protectedText: string[] = [];
+  let masked = '';
   let i = 0;
   while (i < raw.length) {
+    const next = raw[i + 1];
+    if (raw[i] === '\\' && next !== undefined && /^[\x21-\x2F\x3A-\x40\x5B-\x60\x7B-\x7E]$/.test(next)) {
+      protectedText.push(next);
+      masked += marker;
+      i += 2;
+      continue;
+    }
+    if (raw[i] === marker) {
+      protectedText.push(marker);
+      masked += marker;
+      i += 1;
+      continue;
+    }
     if (raw[i] === '`') {
-      const end = findInlineCodeSpanEnd(raw, i);
+      const end = findCodeSpanEnd(raw, i);
       if (end !== null) {
-        if (i > plainStart) {
-          out += stripNonCodeFormatting(raw.slice(plainStart, i));
-        }
         let tickEnd = i;
         while (tickEnd < end && raw[tickEnd] === '`') {
           tickEnd += 1;
@@ -61,22 +48,28 @@ function stripInlineFormatting(raw: string): string {
         ) {
           inner = inner.slice(1, -1);
         }
-        out += inner;
+        protectedText.push(inner);
+        masked += marker;
         i = end;
-        plainStart = end;
         continue;
       }
       while (i < raw.length && raw[i] === '`') {
+        masked += '`';
         i += 1;
       }
       continue;
     }
+    masked += raw[i] ?? '';
     i += 1;
   }
-  if (plainStart < raw.length) {
-    out += stripNonCodeFormatting(raw.slice(plainStart));
+
+  let stripped = stripNonCodeFormatting(masked);
+  while (stripped !== masked) {
+    masked = stripped;
+    stripped = stripNonCodeFormatting(masked);
   }
-  return out;
+  let index = 0;
+  return stripped.replaceAll(marker, () => protectedText[index++]!);
 }
 
 function normalizeLiteralSegment(raw: string): string {

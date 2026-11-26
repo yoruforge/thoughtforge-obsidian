@@ -136,4 +136,15 @@ describe('backlinks (M4-b exact topic resolution & deterministic sorting)', () =
     expect(doesLinkTargetTopicNode(doc2, 'Target#buildapiv2', plain2.id)).toBe(true);
     expect(doesLinkTargetTopicNode(doc2, 'Target#buildapiv2', under2.id)).toBe(false);
   });
+
+  it('marks direct backlinks for headings with emphasis wrapping inline code spans (Codex #7822c46c)', () => {
+    const doc = parseOk('# Headings\n## Other\n## **Use `foo` now**\n');
+    const otherNode = [...doc.nodes.values()].find((n) => n.titleRaw === 'Other');
+    const useFooNode = [...doc.nodes.values()].find((n) => n.titleRaw === '**Use `foo` now**');
+    expect(otherNode && useFooNode).toBeTruthy();
+    if (!otherNode || !useFooNode) return;
+
+    expect(doesLinkTargetTopicNode(doc, 'Headings#Use foo now', useFooNode.id)).toBe(true);
+    expect(doesLinkTargetTopicNode(doc, 'Headings#Use foo now', otherNode.id)).toBe(false);
+  });
 });

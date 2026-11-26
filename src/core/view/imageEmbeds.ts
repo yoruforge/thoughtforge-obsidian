@@ -1,4 +1,5 @@
 import type { TopicNode } from '../model';
+import { findCodeSpanEnd, parseMarkdownLinkOrImageAt } from '../parser/inlineMarkdown';
 
 export interface ImageEmbedRef {
   /** Decoded safe relative vault path (e.g. "assets/diagram.png"). */
@@ -62,136 +63,6 @@ export function defaultImageAltFromPath(targetPath: string): string {
 
 export function isNumericImageDimension(label: string): boolean {
   return NUMERIC_DIMENSION_RE.test(label.trim());
-}
-
-/**
- * Finds the end index (exclusive) of a CommonMark inline code span starting at `start`
- * (where `text[start] === '`'`). Matches the exact closing run of `tickCount` backticks
- * per CommonMark §6.1 so double/triple backtick spans containing single backticks
- * (e.g. `` ``code ` ![[img.png]]`` ``) are skipped accurately.
- */
-function findCodeSpanEnd(text: string, start: number): number | null {
-  let tickEnd = start;
-  while (tickEnd < text.length && text[tickEnd] === '`') {
-    tickEnd += 1;
-  }
-  const tickCount = tickEnd - start;
-  let i = tickEnd;
-  while (i < text.length) {
-    if (text[i] === '`') {
-      let runEnd = i;
-      while (runEnd < text.length && text[runEnd] === '`') {
-        runEnd += 1;
-      }
-      if (runEnd - i === tickCount) {
-        return runEnd;
-      }
-      i = runEnd;
-      continue;
-    }
-    i += 1;
-  }
-  return null;
-}
-
-/**
- * Parses a CommonMark Markdown image `![alt](dest "optional title")` starting at `start`
- * (where `text.startsWith('![', start)`). Supports both angle-bracketed destinations
- * (`<pic one.png>`) and balanced parentheses inside bare destinations (`pic(1).png`).
- */
-function parseMarkdownImageAt(
-  text: string,
-  start: number,
-): { readonly end: number; readonly alt: string; readonly rawTarget: string } | null {
-  // Scan alt text `[...]` (respecting backslash escapes and single nesting)
-  let i = start + 2;
-  let bracketDepth = 1;
-  while (i < text.length && bracketDepth > 0) {
-    const ch = text[i];
-    if (ch === '\\' && i + 1 < text.length) {
-      i += 2;
-      continue;
-    }
-    if (ch === '[') bracketDepth += 1;
-    else if (ch === ']') bracketDepth -= 1;
-    i += 1;
-  }
-  if (bracketDepth !== 0 || text[i] !== '(') {
-    return null;
-  }
-  const alt = text.slice(start + 2, i - 1);
-  i += 1; // skip '('
-
-  // Skip optional leading whitespace
-  while (i < text.length && (text[i] === ' ' || text[i] === '\t')) {
-    i += 1;
-  }
-  if (i >= text.length) return null;
-
-  let rawTarget = '';
-  if (text[i] === '<') {
-    // CommonMark angle-bracketed destination: allows spaces & parentheses until unescaped '>'
-    i += 1;
-    const destStart = i;
-    while (i < text.length && text[i] !== '>' && text[i] !== '\n') {
-      if (text[i] === '\\' && i + 1 < text.length) {
-        i += 2;
-        continue;
-      }
-      i += 1;
-    }
-    if (text[i] !== '>') return null;
-    rawTarget = text.slice(destStart, i).replace(/\\([<>\\])/g, '$1');
-    i += 1; // skip '>'
-  } else {
-    // CommonMark bare destination: allows balanced parentheses e.g. pic(1).png
-    const destStart = i;
-    let parenDepth = 0;
-    while (i < text.length) {
-      const ch = text[i];
-      if (ch === '\\' && i + 1 < text.length) {
-        i += 2;
-        continue;
-      }
-      if (ch === ' ' || ch === '\t' || ch === '\n' || ch === '\r') {
-        break;
-      }
-      if (ch === '(') {
-        parenDepth += 1;
-      } else if (ch === ')') {
-        if (parenDepth === 0) break;
-        parenDepth -= 1;
-      }
-      i += 1;
-    }
-    if (parenDepth !== 0) return null;
-    rawTarget = text.slice(destStart, i).replace(/\\([()\\])/g, '$1');
-  }
-
-  // Skip optional whitespace and optional quoted title before closing ')'
-  while (i < text.length && (text[i] === ' ' || text[i] === '\t')) {
-    i += 1;
-  }
-  if (text[i] === '"' || text[i] === "'") {
-    const quote = text[i];
-    i += 1;
-    while (i < text.length && text[i] !== quote && text[i] !== '\n') {
-      if (text[i] === '\\' && i + 1 < text.length) {
-        i += 2;
-        continue;
-      }
-      i += 1;
-    }
-    if (text[i] !== quote) return null;
-    i += 1;
-    while (i < text.length && (text[i] === ' ' || text[i] === '\t')) {
-      i += 1;
-    }
-  }
-  if (text[i] !== ')') {
-    return null;
-  }
-  return { end: i + 1, alt, rawTarget };
 }
 
 /**
@@ -281,9 +152,9 @@ export function extractImageEmbeds(text: string): readonly ImageEmbedRef[] {
 
     // CommonMark Markdown image: ![alt](pic(1).png) or ![alt](<pic one.png>)
     if (ch === '!' && text[i + 1] === '[' && text[i + 2] !== '[') {
-      const parsed = parseMarkdownImageAt(text, i);
-      if (parsed !== null) {
-        pushUnique(parsed.rawTarget, parsed.alt.trim(), true);
+      const parsed = parseMarkdownLinkOrImageAt(text, i);
+      if (parsed !== null && parsed.isImage) {
+        pushUnique(parsed.rawTarget, parsed.label.trim(), true);
         i = parsed.end;
         continue;
       }

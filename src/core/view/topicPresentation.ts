@@ -4,21 +4,13 @@ import type {
   MindMapDocument,
   TopicNumberingMode,
 } from '../model';
+import { tokenizeInlineMarkdown } from '../parser/inlineMarkdown';
 
 // Matches Obsidian inline tags (#tag, #nested/tag, Unicode/Japanese tags) preceded by
 // start-of-string or a valid delimiter (whitespace / opening bracket / punctuation) and
 // excludes purely numeric hashes like #123.
 const PLAIN_TEXT_TAG_RE =
   /(^|[\s([「（【、,;])(#(?![0-9]+(?:$|[\s)\]}.,;:!?」）】、]))[\p{L}\p{N}_/-]+)/gu;
-
-// Matches Markdown constructs whose interior must never be scanned for Obsidian #tags:
-// 1. Inline code spans (`...`)
-// 2. Embeds & images (![[...]] and ![alt](url))
-// 3. Wikilinks ([[target]] or [[target|alias]])
-// 4. Markdown links ([label](target))
-// 5. Bare http/https URLs (e.g. https://example.com/page#fragment)
-const NON_TAG_CONSTRUCT_RE =
-  /`[^`]+`|!\[\[[^[\]]+\]\]|!\[[^\]]*\]\([^)\s]+\)|(?<!!)\[\[([^[\]|]+)(?:\|([^[\]]+))?\]\]|(?<!!)\[([^\]]+)\]\(([^)\s]+)\)|https?:\/\/[^\s<>()]+/g;
 
 export interface TitleSegment {
   readonly kind: 'text' | 'tag';
@@ -79,37 +71,20 @@ export function tokenizeTopicTitle(titleRaw: string): readonly TitleSegment[] {
   }
 
   const segments: TitleSegment[] = [];
-  let cursor = 0;
   let allowStartBoundary = true;
 
-  for (const match of trimmed.matchAll(NON_TAG_CONSTRUCT_RE)) {
-    const index = match.index;
-    if (index === undefined) continue;
-
-    if (index > cursor) {
-      tokenizePlainTextChunk(trimmed.slice(cursor, index), allowStartBoundary, segments);
+  for (const token of tokenizeInlineMarkdown(trimmed)) {
+    if (token.kind === 'plain') {
+      tokenizePlainTextChunk(token.text, allowStartBoundary, segments);
+      continue;
     }
-
-    const full = match[0];
-    const wikiTarget = match[1];
-    const wikiAlias = match[2];
-    const mdLabel = match[3];
-
-    if (wikiTarget !== undefined) {
-      appendTextSegment(segments, (wikiAlias ?? wikiTarget).trim());
-    } else if (mdLabel !== undefined) {
-      appendTextSegment(segments, mdLabel.trim());
+    if (token.kind === 'wikilink' || token.kind === 'mdlink') {
+      appendTextSegment(segments, token.label);
     } else {
-      // Inline code span or bare URL: preserve literal text, never scan for tags
-      appendTextSegment(segments, full);
+      // Inline code span, embed/image, or bare URL: preserve literal text, never scan for tags
+      appendTextSegment(segments, token.raw);
     }
-
-    cursor = index + full.length;
     allowStartBoundary = false;
-  }
-
-  if (cursor < trimmed.length) {
-    tokenizePlainTextChunk(trimmed.slice(cursor), allowStartBoundary, segments);
   }
 
   return segments;

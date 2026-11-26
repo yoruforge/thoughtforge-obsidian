@@ -1,4 +1,5 @@
 import type { OffsetRange, TopicLink } from '../model';
+import { tokenizeInlineMarkdown } from './inlineMarkdown';
 
 export interface ParsedTitleParts {
   readonly titleRaw: string;
@@ -81,61 +82,28 @@ export function parseTitleParts(
 
 export function extractTitleLinks(titleRaw: string): readonly TopicLink[] {
   const links: TopicLink[] = [];
-  const seenSpans: Array<{ start: number; end: number }> = [];
-
-  const overlaps = (start: number, end: number): boolean =>
-    seenSpans.some((span) => start < span.end && end > span.start);
-
-  // 1. Wikilinks [[target]] or [[target|alias]] (exclude embeds ![[...]])
-  const wikilinkRe = /(?<!!)\[\[([^[\]|]+)(?:\|([^[\]]+))?\]\]/g;
-  for (const match of titleRaw.matchAll(wikilinkRe)) {
-    const index = match.index;
-    const rawTarget = match[1];
-    if (index === undefined || rawTarget === undefined) continue;
-    const target = rawTarget.trim();
-    const label = (match[2] ?? target).trim();
-    if (target.length > 0) {
-      links.push({ kind: 'wikilink', target, label });
-      seenSpans.push({ start: index, end: index + match[0].length });
+  for (const token of tokenizeInlineMarkdown(titleRaw)) {
+    if (token.kind === 'wikilink') {
+      links.push({ kind: 'wikilink', target: token.target, label: token.label });
+    } else if (token.kind === 'mdlink') {
+      links.push({ kind: 'markdown', target: token.rawTarget, label: token.label });
+    } else if (token.kind === 'url') {
+      links.push({ kind: 'url', target: token.raw, label: token.raw });
     }
   }
-
-  // 2. Markdown links [label](target) (exclude images ![alt](...))
-  const mdLinkRe = /(?<!!)\[([^\]]+)\]\(([^)\s]+)\)/g;
-  for (const match of titleRaw.matchAll(mdLinkRe)) {
-    const index = match.index;
-    const rawLabel = match[1];
-    const rawTarget = match[2];
-    if (index === undefined || rawLabel === undefined || rawTarget === undefined) continue;
-    const end = index + match[0].length;
-    if (overlaps(index, end)) continue;
-    links.push({ kind: 'markdown', target: rawTarget.trim(), label: rawLabel.trim() });
-    seenSpans.push({ start: index, end });
-  }
-
-  // 3. Bare http/https URLs
-  const urlRe = /https?:\/\/[^\s<>()]+/g;
-  for (const match of titleRaw.matchAll(urlRe)) {
-    const index = match.index;
-    if (index === undefined) continue;
-    const rawUrl = match[0].replace(/[.,;:!?]+$/, '');
-    const end = index + rawUrl.length;
-    if (rawUrl.length === 0 || overlaps(index, end)) continue;
-    links.push({ kind: 'url', target: rawUrl, label: rawUrl });
-    seenSpans.push({ start: index, end });
-  }
-
   return links;
 }
 
 export function formatDisplayTitle(titleRaw: string): string {
-  const withoutWikiSyntax = titleRaw.replace(
-    /(?<!!)\[\[([^[\]|]+)(?:\|([^[\]]+))?\]\]/g,
-    (_full, target: string, alias?: string) => (alias ?? target).trim(),
-  );
-  const withoutMdLinks = withoutWikiSyntax.replace(
-    /(?<!!)\[([^\]]+)\]\(([^)\s]+)\)/g,
-    (_full, label: string) => label.trim(),
-  );
-  return withoutMdLinks.trim();
+  let out = '';
+  for (const token of tokenizeInlineMarkdown(titleRaw)) {
+    if (token.kind === 'plain') {
+      out += token.text;
+    } else if (token.kind === 'wikilink' || token.kind === 'mdlink') {
+      out += token.label;
+    } else {
+      out += token.raw;
+    }
+  }
+  return out.trim();
 }
