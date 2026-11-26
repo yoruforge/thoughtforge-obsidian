@@ -2,6 +2,29 @@ import type { Messages } from './en';
 
 export const ja: Messages = {
   pluginName: 'ThoughtForge',
+  extraction: {
+    historyRefused:
+      '切り出しを再適用できません。元ノートと保存先の編集状態・内容を確認してください。',
+    title: '枝を別ノートに切り出す',
+    folder: '保存先フォルダ',
+    name: 'ノート名',
+    open: '切り出し先をマップで開く',
+    create: '切り出す',
+    retry: '再利用して完了',
+    cancel: 'キャンセル',
+    confirm: '元の枝と保存先（改名済みのコピーも含む）を確認し、この場所で再開する',
+    recovery: '未完了の切り出しを復旧する',
+    original: '元の枝の Markdown',
+    created: '切り出し完了',
+    reused: '既存ノートを再利用しました',
+    failure: '切り出しを停止しました',
+    ready: '新しいノートを作成します。',
+    conflict: '保存先が存在しないか、変更済みまたは使用中です。',
+    children: '子孫トピック',
+    blocks: '保護ブロック',
+    none: '未完了の操作はありません。',
+    saved: '記録された保存先',
+  },
   commands: {
     openAsMap: '現在のノートをマインドマップで開く',
     openMarkdownBeside: 'マインドマップの横にMarkdownを開く',

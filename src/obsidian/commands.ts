@@ -1,3 +1,4 @@
+import { showExtractionRecovery } from './ExtractBranchModal';
 import { MarkdownView, Notice } from 'obsidian';
 import type ThoughtForgePlugin from '../main';
 import { MindMapView } from './MindMapView';
@@ -7,6 +8,22 @@ import { MindMapView } from './MindMapView';
  * hotkeys (per Obsidian Community Plugin guidelines to avoid hotkey conflicts).
  */
 export function registerPluginCommands(plugin: ThoughtForgePlugin): void {
+  plugin.addCommand({
+    id: 'extract-branch-to-note',
+    name: plugin.messages.extraction.title,
+    checkCallback: (checking) =>
+      plugin.app.workspace.getActiveViewOfType(MindMapView)?.triggerExtract(checking) ?? false,
+  });
+  plugin.addCommand({
+    id: 'recover-branch-extraction',
+    name: plugin.messages.extraction.recovery,
+    checkCallback: (checking) => {
+      const records = plugin.getExtractionAdapter().records();
+      if (!records.length) return false;
+      if (!checking) showExtractionRecovery(plugin.app, records, plugin.messages.extraction);
+      return true;
+    },
+  });
   plugin.addCommand({
     id: 'open-as-mindmap',
     name: plugin.messages.commands.openAsMap,

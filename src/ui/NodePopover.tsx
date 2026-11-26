@@ -60,6 +60,7 @@ export interface NodePopoverProps {
   readonly backlinks?: readonly BacklinkItem[];
   readonly metadataFreshness?: 'fresh' | 'updating';
   readonly onClose: () => void;
+  readonly onExtract?: () => void;
   readonly onJumpToSource: (line: number) => void;
   readonly onOpenLink: (link: TopicLink, newTab: boolean) => void;
   readonly onOpenBacklink?: (sourcePath: string, newTab: boolean) => void;
@@ -92,6 +93,7 @@ export function NodePopover({
   backlinks,
   metadataFreshness,
   onClose,
+  onExtract,
   onJumpToSource,
   onOpenLink,
   onOpenBacklink,
@@ -737,6 +739,11 @@ export function NodePopover({
       )}
 
       <div className="ito-popover-footer">
+        {onExtract && editable && !noteSession && (
+          <button type="button" className="ito-btn ito-extract-open" disabled={isSaving} onClick={onExtract}>
+            {messages.extraction.title}
+          </button>
+        )}
         <button
           type="button"
           className="ito-btn"

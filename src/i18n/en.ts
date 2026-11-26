@@ -1,5 +1,28 @@
 export const en = {
   pluginName: 'ThoughtForge',
+  extraction: {
+    historyRefused:
+      'The extraction could not be reapplied. Check the source and destination notes.',
+    title: 'Extract branch to note',
+    folder: 'Vault folder',
+    name: 'Note name',
+    open: 'Open the extracted map',
+    create: 'Extract',
+    retry: 'Reuse and finish',
+    cancel: 'Cancel',
+    confirm: 'I checked this branch and the saved destination (including any renamed copy) and want to resume here.',
+    recovery: 'Recover an unfinished branch extraction',
+    original: 'Original branch Markdown',
+    created: 'Extracted to',
+    reused: 'Reused the existing note',
+    failure: 'Extraction stopped',
+    ready: 'A new note will be created.',
+    conflict: 'The destination is missing, changed, or already in use.',
+    children: 'Descendant topics',
+    blocks: 'Preserved blocks',
+    none: 'No unfinished extractions.',
+    saved: 'Saved destination',
+  },
   commands: {
     openAsMap: 'Open current note as mind map',
     openMarkdownBeside: 'Open Markdown beside mind map',

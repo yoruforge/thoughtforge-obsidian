@@ -1,11 +1,12 @@
+import { isSafeVaultLinkPath } from '../core/view/vaultLinkPath';
 import {
-  FileView,
-  MarkdownView,
-  Notice,
-  Scope,
-  TFile,
-  type WorkspaceLeaf,
-} from 'obsidian';
+  ExtractBranchModal,
+  showExtractionRecovery,
+  type ExtractChoice,
+} from './ExtractBranchModal';
+import { planBranchExtraction, sanitizeNoteFileStem } from '../core/patch/extractBranch';
+import { createHistoryAnchor, resolveHistoryAnchor } from '../core/view/topicResolver';
+import { FileView, MarkdownView, Notice, Scope, TFile, type WorkspaceLeaf } from 'obsidian';
 import { createElement } from 'react';
 import { createRoot, type Root } from 'react-dom/client';
 import type { ResolvedThemeMode } from '../core/layout/theme';
@@ -22,11 +23,7 @@ import { splitLinkTargetSubpath } from '../core/view/topicResolver';
 import type { Messages } from '../i18n';
 import type { SaveDraftInput } from '../sync/DraftStore';
 import type { CommandDispatchOutcome, SyncRejectCode } from '../sync/ports';
-import {
-  MindMapApp,
-  type MapRevealRequest,
-  type MindMapActionTriggers,
-} from '../ui/App';
+import { MindMapApp, type MapRevealRequest, type MindMapActionTriggers } from '../ui/App';
 import { isInsideMapPopover } from '../ui/keyboardGuard';
 import type ThoughtForgePlugin from '../main';
 import { promptConfirmDeleteBranch } from './ConfirmModal';
@@ -80,6 +77,15 @@ function formatRejectMessage(
     case 'unsupported-command':
       return messages.edit.unsupportedCommand;
     case 'io-error':
+      if (
+        isHistoryAction &&
+        fallbackReason &&
+        /^(destination-|editor-|unsafe-reference|invalid-link|recovery-required)/.test(
+          fallbackReason,
+        )
+      ) {
+        return messages.extraction.historyRefused + ' ' + fallbackReason;
+      }
       return messages.edit.ioError;
     case 'invalid-note-block-syntax':
       return messages.edit.invalidNoteBlockSyntax;
@@ -103,24 +109,6 @@ function isSafeExternalUrl(rawTarget: string): string | null {
   }
 }
 
-function isSafeVaultLinkPath(rawTarget: string): boolean {
-  if (rawTarget.length === 0) return false;
-  let decoded = rawTarget;
-  try {
-    decoded = decodeURIComponent(rawTarget);
-  } catch {
-    decoded = rawTarget;
-  }
-  for (const candidate of [rawTarget, decoded]) {
-    if (/^[\\/]/.test(candidate)) return false;
-    if (/^[a-zA-Z][a-zA-Z\d+.-]*:/.test(candidate)) return false;
-    const pathPart = candidate.split('#')[0] ?? '';
-    const segments = pathPart.split(/[\\/]/);
-    if (segments.includes('..')) return false;
-  }
-  return true;
-}
-
 function isEditableDomTarget(target: unknown): boolean {
   if (typeof target !== 'object' || target === null) return false;
   const candidate = target as {
@@ -135,8 +123,12 @@ function isEditableDomTarget(target: unknown): boolean {
 
 function hasCssClass(target: unknown, className: string): boolean {
   if (typeof target !== 'object' || target === null) return false;
-  const candidate = target as { readonly classList?: { readonly contains?: (cls: string) => boolean } };
-  return typeof candidate.classList?.contains === 'function' && candidate.classList.contains(className);
+  const candidate = target as {
+    readonly classList?: { readonly contains?: (cls: string) => boolean };
+  };
+  return (
+    typeof candidate.classList?.contains === 'function' && candidate.classList.contains(className)
+  );
 }
 
 function isNodeInsideContainer(container: HTMLElement, target: unknown): boolean {
@@ -165,7 +157,8 @@ export class MindMapView extends FileView {
   private reactRoot: Root | null = null;
   private parseResult: ParseResult | null = null;
   private lastRenderedSnapshot: RenderedFileSnapshot | null = null;
-  private lastCommandFocus: { readonly doc: MindMapDocument; readonly nodeId: string } | null = null;
+  private lastCommandFocus: { readonly doc: MindMapDocument; readonly nodeId: string } | null =
+    null;
   private readonly navHistory = new MapNavigationHistory();
   private pendingReveal: MapRevealRequest | null = null;
   private nextRevealToken = 0;
@@ -260,6 +253,108 @@ export class MindMapView extends FileView {
       activeElementInsideMap: isNodeInsideContainer(this.contentEl, activeEl),
       activeElementIsBody: activeEl === null || activeEl === ownerDoc.body,
     });
+  }
+
+  private extractModalOpen = false;
+
+  triggerExtract(checkOnly = false): boolean {
+    return !this.extractModalOpen && (this.actionTriggers?.extractSelected(checkOnly) ?? false);
+  }
+
+  private async extractSelected(node: TopicNode): Promise<void> {
+    const file = this.file,
+      parsed = this.parseResult,
+      snapshot = this.lastRenderedSnapshot;
+    if (
+      this.extractModalOpen ||
+      !file ||
+      parsed?.status !== 'ok' ||
+      !snapshot ||
+      snapshot.path !== file.path ||
+      parsed.document.nodes.get(node.id) !== node
+    )
+      return;
+    const doc = parsed.document,
+      source = file.path,
+      seq = this.loadSequence;
+    const messages = this.plugin.messages.extraction;
+    this.extractModalOpen = true;
+    try {
+      const preview = planBranchExtraction(snapshot.rawText, doc, node, '[[Extracted Branch]]');
+      const adapter = this.plugin.getExtractionAdapter();
+      const retries = adapter
+        .records()
+        .filter(
+          (r) =>
+            r.source === source &&
+            (resolveHistoryAnchor(doc, r.anchor) === node.id ||
+              (resolveHistoryAnchor(doc, r.anchor) === null &&
+                r.originalBranch === preview.originalBranch)),
+        );
+      const folder = this.app.fileManager.getNewFileParent(source).path;
+      const choice = await new Promise<ExtractChoice | null>((resolve) =>
+        new ExtractBranchModal(
+          this.app,
+          {
+            source,
+            title: node.displayTitle,
+            folder: folder === '/' ? '' : folder,
+            name: sanitizeNoteFileStem(node.displayTitle),
+            descendants: preview.descendantCount,
+            protectedBlocks: preview.protectedBlockCount,
+            retries,
+            ambiguous: retries.some((r) => r.phase === 'prepared' || resolveHistoryAnchor(doc, r.anchor) !== node.id),
+            adapter,
+            messages,
+            imeWindow: this.plugin.mindMapSettings.imeGuardWindowMs,
+          },
+          resolve,
+        ).open(),
+      );
+      if (!choice) return;
+      if (isStaleAsyncViewUpdate(source, seq, this.file?.path, this.loadSequence))
+        throw new Error('stale-target');
+      const outcome = await this.plugin.getFileCoordinator().extract({
+        source,
+        before: snapshot.rawText,
+        anchor: createHistoryAnchor(doc, node),
+        ...choice,
+      });
+      if (!outcome.accepted) throw new Error(outcome.reason);
+      if (this.file?.path === source) {
+        await this.reloadFromFile(file);
+        if (this.file?.path === source) {
+          const written = outcome.nextDocument;
+          const focus =
+            written && outcome.focusNodeId ? written.nodes.get(outcome.focusNodeId) : undefined;
+          if (written && focus) {
+            this.pendingReveal = {
+              filePath: source,
+              token: ++this.nextRevealToken,
+              fromHistory: true,
+              anchor: createHistoryAnchor(written, focus),
+            };
+            this.renderApp();
+          }
+          if (choice.openMap) {
+            const dest = this.app.vault.getFileByPath(choice.destination);
+            if (dest) await this.navigateToMarkdownFile(file, dest, undefined, false);
+          }
+        }
+      }
+      new Notice((choice.retryId ? messages.reused : messages.created) + ' ' + choice.destination);
+    } catch (error) {
+      new Notice(
+        messages.failure + ' · ' + (error instanceof Error ? error.message : String(error)),
+      );
+      const pending = this.plugin
+        .getExtractionAdapter()
+        .records()
+        .filter((r) => r.source === source);
+      if (pending.length) showExtractionRecovery(this.app, pending, messages);
+    } finally {
+      this.extractModalOpen = false;
+    }
   }
 
   triggerUndo(): void {
@@ -488,7 +583,11 @@ export class MindMapView extends FileView {
         return { accepted: false, rejectCode: 'boundary-no-op', reason: 'Deletion cancelled.' };
       }
       if (isStaleAsyncViewUpdate(targetPath, seq, this.file?.path, this.loadSequence)) {
-        return { accepted: false, rejectCode: 'stale-target', reason: 'View changed during confirmation.' };
+        return {
+          accepted: false,
+          rejectCode: 'stale-target',
+          reason: 'View changed during confirmation.',
+        };
       }
       return this.dispatchCommand({ ...command, confirmedUnmapped: true }, targetPath);
     }
@@ -552,7 +651,12 @@ export class MindMapView extends FileView {
     }
 
     new Notice(
-      formatRejectMessage(this.plugin.messages, outcome.rejectCode, outcome.reason, isHistoryAction),
+      formatRejectMessage(
+        this.plugin.messages,
+        outcome.rejectCode,
+        outcome.reason,
+        isHistoryAction,
+      ),
     );
     if (outcome.rejectCode === 'stale-target') {
       void this.reloadFromFile(file);
@@ -725,6 +829,9 @@ export class MindMapView extends FileView {
           ),
         onCopyBranchSubtree: (node: TopicNode) => this.copyBranchSubtree(node),
         onReadBranchClipboard: () => this.readBranchClipboard(),
+        onExtract: (node: TopicNode) => {
+          void this.extractSelected(node);
+        },
         onOpenMarkdown: (line?: number) => {
           void this.openMarkdownAtLine(line);
         },

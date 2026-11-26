@@ -1123,3 +1123,6 @@
   font-size: 13px;
   color: var(--text-muted);
 }
+
+.ito-extract-field { display: flex; justify-content: space-between; align-items: center; gap: 1em; margin: .75em 0; }
+.ito-extract-recovery { width: 100%; min-height: 8em; }

@@ -88,6 +88,7 @@ import {
 } from './ViewportCanvas';
 
 export interface MindMapActionTriggers {
+  readonly extractSelected: (checkOnly?: boolean) => boolean;
   readonly editSelected: () => boolean;
   readonly splitEditing: (event: GuardableKeyEvent) => boolean;
   readonly commitNoteEdit: (event: GuardableKeyEvent) => boolean;
@@ -151,6 +152,7 @@ export interface MindMapAppProps {
   ) => Promise<boolean | void>;
   readonly onCopyBranchSubtree?: (node: TopicNode) => Promise<boolean>;
   readonly onReadBranchClipboard?: () => Promise<string | null>;
+  readonly onExtract?: (node: TopicNode) => void;
   readonly onOpenMarkdown: (line?: number) => void;
   readonly onOpenLink: (link: TopicLink, newTab: boolean) => void;
   readonly onOpenVaultFile?: (vaultPath: string, newTab: boolean) => void;
@@ -213,6 +215,7 @@ export function MindMapApp({
   onDeleteMatchingDraft,
   onCopyBranchSubtree,
   onReadBranchClipboard,
+  onExtract,
   onOpenMarkdown,
   onOpenLink,
   onOpenVaultFile,
@@ -1641,6 +1644,7 @@ export function MindMapApp({
   );
 
   const actionTriggersRef = useRef<MindMapActionTriggers>({
+    extractSelected: () => false,
     editSelected: () => false,
     splitEditing: () => false,
     commitNoteEdit: () => false,
@@ -1654,6 +1658,16 @@ export function MindMapApp({
     fitSelection: () => false,
   });
   actionTriggersRef.current = {
+    extractSelected: (checkOnly = false) => {
+      if (!doc || !effectiveSelectedId || !onExtract || effectiveEditingSession ||
+        doc.readOnlyReasons.length || isCommandInFlightRef.current || noteCommitTriggerRef.current) {
+        return false;
+      }
+      const node = doc.nodes.get(effectiveSelectedId);
+      if (!node || node.id === doc.rootId) return false;
+      if (!checkOnly) onExtract(node);
+      return true;
+    },
     editSelected: (): boolean => {
       if (!doc || !layout) return false;
       if (effectiveEditingSession !== null) return false;
@@ -1717,6 +1731,7 @@ export function MindMapApp({
   useEffect(() => {
     if (!onRegisterActionTriggers) return;
     const triggers: MindMapActionTriggers = {
+      extractSelected: (checking) => actionTriggersRef.current.extractSelected(checking),
       editSelected: () => actionTriggersRef.current.editSelected(),
       splitEditing: (event: GuardableKeyEvent) => actionTriggersRef.current.splitEditing(event),
       commitNoteEdit: (event: GuardableKeyEvent) => actionTriggersRef.current.commitNoteEdit(event),
@@ -2233,6 +2248,9 @@ export function MindMapApp({
             backlinks={selectedNodeBacklinks}
             metadataFreshness={metadataFreshness}
             onClose={handleClosePopover}
+            onExtract={onExtract && selectedNode.id !== doc.rootId
+              ? () => actionTriggersRef.current.extractSelected()
+              : undefined}
             onJumpToSource={(line) => onOpenMarkdown(line)}
             onOpenLink={(link, newTab) => handleOpenLinkFromMap(link, newTab, selectedNode.id)}
             onOpenBacklink={

@@ -10,7 +10,8 @@ import { getMessages, type Messages } from './i18n';
 import { isSafeVaultImagePath } from './core/view/imageEmbeds';
 import { registerPluginCommands } from './obsidian/commands';
 import { MINDMAP_VIEW_TYPE, MindMapView } from './obsidian/MindMapView';
-import { ObsidianHostAdapter } from './obsidian/ObsidianHostAdapter';
+import { ExtractionAdapter } from './obsidian/ExtractionAdapter';
+import { isExtractionRecord, type ExtractionRecord } from './sync/branchExtraction';
 import { ObsidianMetadataProvider } from './obsidian/ObsidianMetadataProvider';
 import { MindMapSettingTab } from './obsidian/settingsTab';
 import { DraftStore } from './sync/DraftStore';
@@ -39,8 +40,10 @@ function isValidDraftEntry(value: unknown): value is DraftEntry {
   );
 }
 
+type StoredData = PluginDataV1 & { readonly extractions?: readonly ExtractionRecord[] };
+
 function parseStoredPluginData(raw: unknown): {
-  readonly data: PluginDataV1;
+  readonly data: StoredData;
   readonly writable: boolean;
 } {
   if (raw === null || raw === undefined) {
@@ -52,6 +55,13 @@ function parseStoredPluginData(raw: unknown): {
   const obj = raw as Record<string, unknown>;
   if (obj['schemaVersion'] !== 1) {
     // Preserve unknown/future schema versions without overwriting data.json.
+    return { data: DEFAULT_PLUGIN_DATA, writable: false };
+  }
+  const extractions = obj['extractions'];
+  if (
+    extractions !== undefined &&
+    (!Array.isArray(extractions) || !extractions.every(isExtractionRecord))
+  ) {
     return { data: DEFAULT_PLUGIN_DATA, writable: false };
   }
   const rawSettings =
@@ -113,7 +123,10 @@ function parseStoredPluginData(raw: unknown): {
   };
 
   const rawDrafts = obj['drafts'];
-  if (rawDrafts !== undefined && (!Array.isArray(rawDrafts) || !rawDrafts.every(isValidDraftEntry))) {
+  if (
+    rawDrafts !== undefined &&
+    (!Array.isArray(rawDrafts) || !rawDrafts.every(isValidDraftEntry))
+  ) {
     // Fail closed if persisted drafts are corrupted so we do not overwrite user data.
     return { data: { schemaVersion: 1, settings: mergedSettings, drafts: [] }, writable: false };
   }
@@ -124,13 +137,16 @@ function parseStoredPluginData(raw: unknown): {
       schemaVersion: 1,
       settings: mergedSettings,
       drafts,
+      extractions,
     },
     writable: true,
   };
 }
 
 export default class ThoughtForgePlugin extends Plugin {
-  private pluginData: PluginDataV1 = DEFAULT_PLUGIN_DATA;
+  private pluginData: StoredData = DEFAULT_PLUGIN_DATA;
+  private saveQueue: Promise<void> = Promise.resolve();
+  private extractionAdapter: ExtractionAdapter | null = null;
   private dataWritable = true;
   private fileCoordinator: FileCoordinator | null = null;
   private draftStore: DraftStore | null = null;
@@ -161,9 +177,41 @@ export default class ThoughtForgePlugin extends Plugin {
     }, 120);
   }
 
+  private persist(update: (current: StoredData) => StoredData): Promise<void> {
+    const run = this.saveQueue.then(async () => {
+      if (!this.dataWritable) throw new Error('storage-unavailable');
+      const next = update(this.pluginData);
+      await this.saveData(next);
+      this.pluginData = next;
+    });
+    this.saveQueue = run.catch(() => undefined);
+    return run;
+  }
+
+  getExtractionAdapter(): ExtractionAdapter {
+    if (!this.extractionAdapter)
+      this.extractionAdapter = new ExtractionAdapter(
+        this.app,
+        () => this.pluginData.extractions ?? [],
+        (record) =>
+          this.persist((current) => ({
+            ...current,
+            extractions: [...(current.extractions ?? []).filter((r) => r.id !== record.id), record],
+          })),
+        (id) =>
+          this.persist((current) => ({
+            ...current,
+            extractions: (current.extractions ?? []).filter((r) => r.id !== id),
+          })),
+      );
+    return this.extractionAdapter;
+  }
+
   getFileCoordinator(): FileCoordinator {
     if (this.fileCoordinator === null) {
-      this.fileCoordinator = new FileCoordinator(new ObsidianHostAdapter(this.app));
+      this.fileCoordinator = new FileCoordinator(this.getExtractionAdapter(), {
+        extractionHost: this.getExtractionAdapter(),
+      });
     }
     return this.fileCoordinator;
   }
@@ -171,20 +219,12 @@ export default class ThoughtForgePlugin extends Plugin {
   getDraftStore(): DraftStore {
     if (this.draftStore === null) {
       this.draftStore = new DraftStore(this.pluginData.drafts, async (nextDrafts) => {
-        this.pluginData = {
-          ...this.pluginData,
-          drafts: nextDrafts,
-        };
-        let persisted = false;
-        if (this.dataWritable) {
-          try {
-            await this.saveData(this.pluginData);
-            persisted = true;
-          } catch {
-            persisted = false;
-          }
+        try {
+          await this.persist((current) => ({ ...current, drafts: nextDrafts }));
+          return true;
+        } catch {
+          return false;
         }
-        return persisted;
       });
       this.draftStore.subscribe(() => {
         this.refreshAllViews();
@@ -214,12 +254,16 @@ export default class ThoughtForgePlugin extends Plugin {
     this.draftStore = null;
     this.getDraftStore();
 
+    this.app.workspace.onLayoutReady(() => {
+      void this.reconcileExtractions();
+    });
     this.registerView(MINDMAP_VIEW_TYPE, (leaf) => new MindMapView(leaf, this));
     registerPluginCommands(this);
     this.addSettingTab(new MindMapSettingTab(this.app, this));
 
     this.registerEvent(
       this.app.vault.on('create', (abstractFile) => {
+        this.extractionAdapter?.changed(abstractFile.path);
         if (abstractFile instanceof TFile && isSafeVaultImagePath(abstractFile.path)) {
           this.getMetadataProvider().bumpVersion();
           this.scheduleMetadataRefresh();
@@ -229,6 +273,7 @@ export default class ThoughtForgePlugin extends Plugin {
 
     this.registerEvent(
       this.app.vault.on('modify', (abstractFile) => {
+        this.extractionAdapter?.changed(abstractFile.path);
         if (!(abstractFile instanceof TFile)) {
           return;
         }
@@ -250,6 +295,8 @@ export default class ThoughtForgePlugin extends Plugin {
 
     this.registerEvent(
       this.app.vault.on('rename', (abstractFile, oldPath) => {
+        this.extractionAdapter?.changed(abstractFile.path);
+        this.extractionAdapter?.changed(oldPath);
         if (!(abstractFile instanceof TFile)) {
           return;
         }
@@ -273,6 +320,7 @@ export default class ThoughtForgePlugin extends Plugin {
 
     this.registerEvent(
       this.app.vault.on('delete', (abstractFile) => {
+        this.extractionAdapter?.changed(abstractFile.path);
         if (abstractFile instanceof TFile) {
           this.getMetadataProvider().removePath(abstractFile.path);
           this.scheduleMetadataRefresh();
@@ -309,6 +357,13 @@ export default class ThoughtForgePlugin extends Plugin {
     );
   }
 
+  private async reconcileExtractions(): Promise<void> {
+    for (const record of this.getExtractionAdapter().records()) {
+      if (record.phase === 'replacing') await this.getFileCoordinator().reconcileExtraction(record);
+    }
+    if (this.getExtractionAdapter().records().length) new Notice(this.messages.extraction.recovery);
+  }
+
   onunload(): void {
     if (this.metadataRefreshTimer !== null) {
       window.clearTimeout(this.metadataRefreshTimer);
@@ -322,16 +377,12 @@ export default class ThoughtForgePlugin extends Plugin {
   }
 
   async updateSettings(patch: Partial<PluginSettings>): Promise<void> {
-    this.pluginData = {
-      ...this.pluginData,
-      settings: {
-        ...this.pluginData.settings,
-        ...patch,
-      },
-    };
-    if (this.dataWritable) {
-      await this.saveData(this.pluginData);
-    }
+    const update = (current: StoredData) => ({
+      ...current,
+      settings: { ...current.settings, ...patch },
+    });
+    if (this.dataWritable) await this.persist(update);
+    else this.pluginData = update(this.pluginData);
     this.refreshAllViews();
   }
 
@@ -349,7 +400,9 @@ export default class ThoughtForgePlugin extends Plugin {
     try {
       const mode = options?.openMode ?? this.mindMapSettings.defaultOpenMode;
       const leaf =
-        mode === 'new-tab' ? this.app.workspace.getLeaf('tab') : this.app.workspace.getLeaf('split');
+        mode === 'new-tab'
+          ? this.app.workspace.getLeaf('tab')
+          : this.app.workspace.getLeaf('split');
       await leaf.setViewState({
         type: MINDMAP_VIEW_TYPE,
         state: { file: file.path },
