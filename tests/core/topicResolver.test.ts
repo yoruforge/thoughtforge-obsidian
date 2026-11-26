@@ -325,4 +325,16 @@ describe('topicResolver (M4-a cursor-to-map & link subpath resolution)', () => {
     if (!italicNode) return;
     expect(resolveTopicBySubpath(italicOnly, 'Use foo now')).toBe(italicNode.id);
   });
+  it('preserves literal markers, escaped backticks and nested formatting in headings', () => {
+    for (const [raw, label] of [
+      ['\uE000`foo`\uE001', '\uE000foo\uE001'],
+      ['~~**Strike Bold**~~', 'Strike Bold'],
+      ['Escaped \\`tick\\`', 'Escaped `tick`'],
+    ] as const) {
+      const doc = parseOk('# Root\n## ' + raw);
+      const id = resolveTopicBySubpath(doc, label);
+      expect(id && doc.nodes.get(id)?.titleRaw).toBe(raw);
+    }
+  });
+
 });

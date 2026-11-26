@@ -11,24 +11,26 @@ function stripNonCodeFormatting(chunk: string): string {
 }
 
 function stripInlineFormatting(raw: string): string {
-  if (!raw.includes('`')) {
-    return stripNonCodeFormatting(raw);
-  }
-  // Protect arbitrary-length code spans with collision-free sentinels so outer emphasis
-  // like `**Use `foo` now**` still strips while inner `_` / `*` characters stay intact.
-  let openSentinel = '\uE000';
-  while (raw.includes(openSentinel)) {
-    openSentinel += '\uE000';
-  }
-  let closeSentinel = '\uE001';
-  while (raw.includes(closeSentinel)) {
-    closeSentinel += '\uE001';
-  }
-
-  const codeSpans: string[] = [];
+  // Mask code, escaped punctuation and any literal marker in the same ordered list.
+  // Each marker in the formatted string therefore restores exactly one original segment.
+  const marker = '\uE000';
+  const protectedText: string[] = [];
   let masked = '';
   let i = 0;
   while (i < raw.length) {
+    const next = raw[i + 1];
+    if (raw[i] === '\\' && next !== undefined && /^[\x21-\x2F\x3A-\x40\x5B-\x60\x7B-\x7E]$/.test(next)) {
+      protectedText.push(next);
+      masked += marker;
+      i += 2;
+      continue;
+    }
+    if (raw[i] === marker) {
+      protectedText.push(marker);
+      masked += marker;
+      i += 1;
+      continue;
+    }
     if (raw[i] === '`') {
       const end = findCodeSpanEnd(raw, i);
       if (end !== null) {
@@ -46,9 +48,8 @@ function stripInlineFormatting(raw: string): string {
         ) {
           inner = inner.slice(1, -1);
         }
-        const idx = codeSpans.length;
-        codeSpans.push(inner);
-        masked += `${openSentinel}${idx}${closeSentinel}`;
+        protectedText.push(inner);
+        masked += marker;
         i = end;
         continue;
       }
@@ -62,30 +63,13 @@ function stripInlineFormatting(raw: string): string {
     i += 1;
   }
 
-  const stripped = stripNonCodeFormatting(masked);
-  if (codeSpans.length === 0) {
-    return stripped;
+  let stripped = stripNonCodeFormatting(masked);
+  while (stripped !== masked) {
+    masked = stripped;
+    stripped = stripNonCodeFormatting(masked);
   }
-  let restored = '';
-  let pos = 0;
-  while (pos < stripped.length) {
-    const startIdx = stripped.indexOf(openSentinel, pos);
-    if (startIdx < 0) {
-      restored += stripped.slice(pos);
-      break;
-    }
-    restored += stripped.slice(pos, startIdx);
-    const numStart = startIdx + openSentinel.length;
-    const endIdx = stripped.indexOf(closeSentinel, numStart);
-    if (endIdx < 0) {
-      restored += stripped.slice(startIdx);
-      break;
-    }
-    const idx = Number.parseInt(stripped.slice(numStart, endIdx), 10);
-    restored += codeSpans[idx] ?? '';
-    pos = endIdx + closeSentinel.length;
-  }
-  return restored;
+  let index = 0;
+  return stripped.replaceAll(marker, () => protectedText[index++]!);
 }
 
 function normalizeLiteralSegment(raw: string): string {

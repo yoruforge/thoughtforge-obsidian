@@ -285,4 +285,15 @@ describe('parseMarkdownToMap', () => {
       { kind: 'markdown', target: 'Sub Dir/My (Note).md', label: 'Real' },
     ]);
   });
+  it('keeps code brackets inside link labels and preserves Wiki alias pipes', () => {
+    const labels = ['Use `[` operator', 'Use `]` operator', 'Use ``a ` ]`` operator'];
+    const md = ['# Root', ...labels.map(label => '- [' + label + '](Plan.md)'),
+      '- [[Plan|A | B]]', '- [](Plan.md)'].join('\n');
+    const result = parseMarkdownToMap(md, 'Root');
+    if (result.status !== 'ok') throw new Error(result.detail);
+    const topics = [...result.document.nodes.values()].slice(1);
+    expect(topics.map(n => n.displayTitle)).toEqual([...labels, 'A | B', 'Plan.md']);
+    expect(topics.map(n => n.links[0]?.target)).toEqual(['Plan.md', 'Plan.md', 'Plan.md', 'Plan', 'Plan.md']);
+  });
+
 });

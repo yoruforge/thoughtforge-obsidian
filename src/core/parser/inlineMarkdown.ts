@@ -76,6 +76,15 @@ export function parseMarkdownLinkOrImageAt(
   let bracketDepth = 1;
   while (i < text.length && bracketDepth > 0) {
     const ch = text[i];
+    if (ch === '`') {
+      const end = findCodeSpanEnd(text, i);
+      if (end !== null) {
+        i = end;
+      } else {
+        while (text[i] === '`') i += 1;
+      }
+      continue;
+    }
     if (ch === '\\' && i + 1 < text.length) {
       i += 2;
       continue;
@@ -243,8 +252,7 @@ export function tokenizeInlineMarkdown(text: string): readonly InlineMarkdownTok
           const rawTarget = pipeIdx >= 0 ? inner.slice(0, pipeIdx) : inner;
           const rawAlias = pipeIdx >= 0 ? inner.slice(pipeIdx + 1) : undefined;
           const target = rawTarget.trim();
-          const hasSecondPipe = rawAlias !== undefined && rawAlias.includes('|');
-          if (target.length > 0 && !hasSecondPipe) {
+          if (target.length > 0) {
             const label = (rawAlias ?? target).trim();
             flushPlain();
             tokens.push({ kind: 'wikilink', raw: text.slice(i, closeIdx + 2), target, label });
@@ -264,7 +272,7 @@ export function tokenizeInlineMarkdown(text: string): readonly InlineMarkdownTok
           kind: 'mdlink',
           raw: text.slice(i, parsed.end),
           rawTarget: parsed.rawTarget.trim(),
-          label: parsed.label.trim(),
+          label: parsed.label.trim() || parsed.rawTarget.trim(),
         });
         i = parsed.end;
         continue;
