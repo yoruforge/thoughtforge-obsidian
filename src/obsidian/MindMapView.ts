@@ -20,7 +20,7 @@ import {
   type MapHistoryEntry,
 } from '../core/view/navigationHistory';
 import { splitLinkTargetSubpath } from '../core/view/topicResolver';
-import type { Messages } from '../i18n';
+import { formatExtractionError, type Messages } from '../i18n';
 import type { SaveDraftInput } from '../sync/DraftStore';
 import type { CommandDispatchOutcome, SyncRejectCode } from '../sync/ports';
 import { MindMapApp, type MapRevealRequest, type MindMapActionTriggers } from '../ui/App';
@@ -77,15 +77,7 @@ function formatRejectMessage(
     case 'unsupported-command':
       return messages.edit.unsupportedCommand;
     case 'io-error':
-      if (
-        isHistoryAction &&
-        fallbackReason &&
-        /^(destination-|editor-|unsafe-reference|invalid-link|recovery-required)/.test(
-          fallbackReason,
-        )
-      ) {
-        return messages.extraction.historyRefused + ' ' + fallbackReason;
-      }
+      if (isHistoryAction) return formatExtractionError(messages, fallbackReason);
       return messages.edit.ioError;
     case 'invalid-note-block-syntax':
       return messages.edit.invalidNoteBlockSyntax;
@@ -345,13 +337,18 @@ export class MindMapView extends FileView {
       new Notice((choice.retryId ? messages.reused : messages.created) + ' ' + choice.destination);
     } catch (error) {
       new Notice(
-        messages.failure + ' · ' + (error instanceof Error ? error.message : String(error)),
+        messages.failure + ' · ' +
+          formatExtractionError(this.plugin.messages, error instanceof Error ? error.message : undefined),
       );
       const pending = this.plugin
         .getExtractionAdapter()
         .records()
         .filter((r) => r.source === source);
-      if (pending.length) showExtractionRecovery(this.app, pending, messages);
+      if (pending.length) {
+        showExtractionRecovery(this.app, pending, messages, (record) =>
+          this.plugin.getFileCoordinator().dismissExtraction(record),
+        );
+      }
     } finally {
       this.extractModalOpen = false;
     }

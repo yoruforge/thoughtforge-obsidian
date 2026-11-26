@@ -1,4 +1,4 @@
-import { Modal, type App } from 'obsidian';
+import { Modal, Notice, type App } from 'obsidian';
 import type { Messages } from '../i18n';
 import type { ExtractionRecord } from '../sync/branchExtraction';
 import { validateVaultNotePath } from '../core/patch/extractBranch';
@@ -144,21 +144,92 @@ export function showExtractionRecovery(
   app: App,
   records: readonly ExtractionRecord[],
   m: Messages['extraction'],
+  onDismiss?: (record: ExtractionRecord) => Promise<void>,
 ) {
   const modal = new Modal(app);
   modal.setTitle(m.recovery);
-  if (!records.length) modal.contentEl.createEl('p', { text: m.none });
+  modal.contentEl.addClass('ito-extract-recovery-modal');
+  const renderEmptyIfNeeded = () => {
+    if (!modal.contentEl.querySelector('.ito-extract-recovery-card')) {
+      modal.contentEl.createEl('p', { text: m.none });
+    }
+  };
+  if (!records.length) {
+    modal.contentEl.createEl('p', { text: m.none });
+    modal.open();
+    return;
+  }
   for (const r of records) {
-    modal.contentEl.createEl('h4', { text: r.source + ' → ' + r.destination });
-    modal.contentEl.createEl('p', {
+    const card = modal.contentEl.createDiv({ cls: 'ito-extract-recovery-card' });
+    card.createEl('h4', { text: r.source + ' → ' + r.destination });
+    card.createEl('p', {
       text: r.anchor.ancestorPath.concat(r.anchor.titleRaw).join(' / '),
     });
-    const area = modal.contentEl.createEl('textarea', {
+    const area = card.createEl('textarea', {
       cls: 'ito-extract-recovery',
       attr: { 'aria-label': m.original, readonly: '' },
     });
     area.value = r.originalBranch;
     area.onfocus = () => area.select();
+
+    const copyBtn = card.createEl('button', {
+      text: m.copyOriginal,
+      cls: 'ito-btn ito-extract-copy',
+      attr: { type: 'button' },
+    });
+    copyBtn.addEventListener('click', () => {
+      const clipboard = card.ownerDocument.defaultView?.navigator?.clipboard;
+      if (clipboard && typeof clipboard.writeText === 'function') {
+        void clipboard
+          .writeText(r.originalBranch)
+          .then(() => {
+            new Notice(m.copiedNotice);
+          })
+          .catch(() => {
+            area.focus();
+            area.select();
+          });
+      } else {
+        area.focus();
+        area.select();
+      }
+    });
+
+    if (onDismiss) {
+      const dismissWrap = card.createDiv({ cls: 'ito-extract-recovery-dismiss' });
+      const confirmLabel = dismissWrap.createEl('label', { cls: 'ito-extract-field' });
+      const confirmBox = confirmLabel.createEl('input', {
+        type: 'checkbox',
+        cls: 'ito-extract-dismiss-confirm',
+      });
+      confirmLabel.createSpan({ text: m.dismissConfirm });
+
+      const dismissBtn = dismissWrap.createEl('button', {
+        text: m.dismissButton,
+        cls: 'ito-btn ito-btn-danger ito-extract-dismiss',
+        attr: { type: 'button' },
+      });
+      dismissBtn.disabled = true;
+      confirmBox.addEventListener('change', () => {
+        dismissBtn.disabled = !confirmBox.checked;
+      });
+      dismissBtn.addEventListener('click', () => {
+        if (!confirmBox.checked) return;
+        dismissBtn.disabled = true;
+        confirmBox.disabled = true;
+        void onDismiss(r)
+          .then(() => {
+            card.remove();
+            renderEmptyIfNeeded();
+            new Notice(m.dismissedNotice);
+          })
+          .catch(() => {
+            confirmBox.disabled = false;
+            dismissBtn.disabled = !confirmBox.checked;
+            new Notice(m.dismissFailedNotice);
+          });
+      });
+    }
   }
   modal.open();
 }

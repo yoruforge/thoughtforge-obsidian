@@ -1,6 +1,6 @@
 import { isSafeVaultLinkPath } from '../core/view/vaultLinkPath';
 import { TFolder, type App } from 'obsidian';
-import { tokenizeInlineMarkdown } from '../core/parser/inlineMarkdown';
+import { maskObsidianInlineComments, tokenizeInlineMarkdown } from '../core/parser/inlineMarkdown';
 import { ObsidianHostAdapter } from './ObsidianHostAdapter';
 import type { ExtractionHost, ExtractionRecord } from '../sync/branchExtraction';
 import {
@@ -106,21 +106,39 @@ export class ExtractionAdapter extends ObsidianHostAdapter implements Extraction
       throw new Error('unsafe-reference');
     }
     const refs = [...(cache.links ?? []), ...(cache.embeds ?? [])];
+    const visibleLines = lines.map(maskObsidianInlineComments);
     const cachedPositions = new Map(
       refs.map((ref) => [ref.position.start.line + ':' + ref.position.start.col, ref.original]),
     );
     for (let line = target.headerLine; line < target.subtreeRange.endLine; line++) {
       if (!['heading', 'list-item', 'topic-note'].includes(doc.lineKinds[line] ?? '')) continue;
       let col = 0;
-      for (const token of tokenizeInlineMarkdown(lines[line] ?? '')) {
+      for (const token of tokenizeInlineMarkdown(visibleLines[line] ?? '')) {
         const spelling = token.kind === 'plain' ? token.text : token.raw;
         const internal =
           token.kind === 'wikilink' ||
           token.kind === 'wikiembed' ||
           (token.kind === 'mdlink' && !/^[a-z][a-z0-9+.-]*:/i.test(token.rawTarget)) ||
           (token.kind === 'mdimage' && !/\]\(<?[a-z][a-z0-9+.-]*:/i.test(token.raw));
-        if (internal && cachedPositions.get(line + ':' + col) !== spelling)
+        if (internal && maskObsidianInlineComments(cachedPositions.get(line + ':' + col) ?? '') !== spelling)
           throw new Error('metadata-updating');
+        // Check nested internal Markdown images/embeds inside a Markdown link label (e.g. `[![alt](pic.png)](url)`).
+        if (token.kind === 'mdlink' && token.raw.startsWith('[')) {
+          const closeBracket = token.raw.lastIndexOf('](');
+          if (closeBracket > 1) {
+            let innerCol = col + 1;
+            const labelRaw = token.raw.slice(1, closeBracket);
+            for (const innerToken of tokenizeInlineMarkdown(labelRaw)) {
+              const innerSpelling = innerToken.kind === 'plain' ? innerToken.text : innerToken.raw;
+              const innerInternal =
+                innerToken.kind === 'wikiembed' ||
+                (innerToken.kind === 'mdimage' && !/\]\(<?[a-z][a-z0-9+.-]*:/i.test(innerToken.raw));
+              if (innerInternal && cachedPositions.get(line + ':' + innerCol) !== innerSpelling)
+                throw new Error('metadata-updating');
+              innerCol += innerSpelling.length;
+            }
+          }
+        }
         col += spelling.length;
       }
     }
@@ -131,6 +149,8 @@ export class ExtractionAdapter extends ObsidianHostAdapter implements Extraction
       const original = ref.original;
       if (start.line !== end.line || lines[start.line]?.slice(start.col, end.col) !== original)
         throw new Error('metadata-updating');
+      // Obsidian can cache links inside comments even though they are not active references.
+      if (visibleLines[start.line]?.slice(start.col, end.col).trim() === '') continue;
       const { pathPart, subpath } = splitLinkTargetSubpath(ref.link);
       if (/^https?:\/\//i.test(ref.link)) continue;
       const old = pathPart ? app.metadataCache.getFirstLinkpathDest(pathPart, source) : file;

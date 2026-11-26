@@ -19,6 +19,7 @@ export interface ExtractionRecord {
   readonly before: string;
   readonly after: string;
   readonly line: number;
+  readonly fromRedo?: boolean;
   readonly phase: 'prepared' | 'created' | 'replacing';
 }
 
@@ -88,10 +89,10 @@ export async function commitExtraction(
   if (verified.after !== record.after || verified.output !== record.output)
     throw new Error('unsafe-reference');
   await host.put(record);
-  const version = await checkDestination(host, record);
   const { source, destination, before, after } = record;
-  clean(host, source);
   try {
+    const version = await checkDestination(host, record);
+    clean(host, source);
     await host.processFile(source, (current) => {
       clean(host, source);
       clean(host, destination);
@@ -102,8 +103,27 @@ export async function commitExtraction(
       return after;
     });
   } catch (error) {
-    // A write can reach disk before an I/O error is reported.
-    if ((await host.readFile(source)) !== after) throw error;
+    // A write can reach disk before an I/O error is reported; inspect disk state carefully.
+    let diskSource: string | null = null;
+    try {
+      diskSource = await host.readFile(source);
+    } catch {
+      // Outcome is unknown: keep the 'replacing' recovery record untouched.
+      throw error;
+    }
+    if (diskSource === before) {
+      // Confirmed source was not modified: clean up temporary Redo WAL or revert phase to 'created'.
+      if (record.fromRedo) {
+        await host.remove(record.id).catch(() => undefined);
+      } else {
+        await host.put({ ...record, phase: 'created', after: '' }).catch(() => undefined);
+      }
+      throw error;
+    }
+    if (diskSource !== after) {
+      // Unexpected concurrent state: retain recovery record for manual inspection.
+      throw error;
+    }
   }
   await confirmExtraction(host, record);
 }
@@ -113,7 +133,12 @@ export async function confirmExtraction(
   host: ExtractionHost,
   record: ExtractionRecord,
 ): Promise<void> {
-  if ((await host.readFile(record.source)) !== record.after) throw new Error('recovery-required');
+  const source = await host.readFile(record.source);
+  if (record.fromRedo && source === record.before) {
+    await host.remove(record.id);
+    return;
+  }
+  if (source !== record.after) throw new Error('recovery-required');
   try {
     await checkDestination(host, record);
   } catch (error) {
@@ -123,6 +148,20 @@ export async function confirmExtraction(
       if (current !== record.after) throw new Error('recovery-required');
       return record.before;
     });
+    // CAS rollback succeeded: verify source returned to exact pre-extraction text before tidying journal.
+    try {
+      if ((await host.readFile(record.source)) === record.before) {
+        if (record.fromRedo) {
+          await host.remove(record.id).catch(() => undefined);
+        } else if (host.existingPath(record.destination) === null) {
+          await host.remove(record.id).catch(() => undefined);
+        } else {
+          await host.put({ ...record, phase: 'created', after: '' }).catch(() => undefined);
+        }
+      }
+    } catch {
+      // Outcome unknown: leave recovery record intact.
+    }
     throw error;
   }
   if ((await host.readFile(record.source)) !== record.after) throw new Error('recovery-required');
@@ -209,6 +248,7 @@ export function isExtractionRecord(value: unknown): value is ExtractionRecord {
   const r = value as Partial<ExtractionRecord>;
   const a = r.anchor;
   return (
+    (r.fromRedo === undefined || typeof r.fromRedo === 'boolean') &&
     typeof r.id === 'string' &&
     typeof r.source === 'string' &&
     typeof r.destination === 'string' &&

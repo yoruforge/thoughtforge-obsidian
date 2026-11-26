@@ -24,6 +24,40 @@ export const ja: Messages = {
     blocks: '保護ブロック',
     none: '未完了の操作はありません。',
     saved: '記録された保存先',
+    copyOriginal: '原文をコピー',
+    copiedNotice: '元の枝の Markdown をクリップボードへコピーしました。',
+    dismissConfirm:
+      '元ノートと保存先を確認済みのため、この復旧記録のみを解消する（ノート自体は削除しません）',
+    dismissButton: '記録を解消',
+    dismissedNotice: '未完了の切り出し記録を解消しました。',
+    dismissFailedNotice: 'プラグイン保存領域に書き込めないため記録を解消できませんでした。',
+    errors: {
+      invalidTargetPath: '保存先のパスまたはファイル名が不正です。',
+      targetSameAsSource: '元ノートと同じパスには切り出せません。',
+      targetAlreadyExists: '同名のノートがすでに存在します。',
+      ambiguousPath: '大文字・小文字違いで一致するファイルが複数存在します。',
+      destinationMissingOrRenamed: '切り出し先のノートが削除または改名されています。',
+      destinationChanged: '切り出し先のノートが外部で変更されています。',
+      pendingExtraction:
+        'この枝または保存先に未完了の切り出し記録があります。先に再開または復旧・解消してください。',
+      ambiguousRecovery:
+        '編集により元の枝を一意に特定できませんでした。対象を確認してチェックしてから再開してください。',
+      recoveryRequired:
+        '元ノートと保存先の状態が一致しません。「未完了の切り出しを復旧する」から元の枝を確認・コピーしてください。',
+      branchChanged:
+        '中断後に元の枝の内容が変更されています。未完了の記録を確認・解消してから再実行してください。',
+      metadataUpdating:
+        'Obsidian のメタデータキャッシュ更新中です。少し待ってから再試行してください。',
+      unresolvedReference:
+        '移動前に解決先を確認できない未解決の内部リンクまたは画像参照が含まれています。',
+      ambiguousReference:
+        '保存先フォルダへ移動すると参照先が曖昧になるリンクまたは画像が含まれています。',
+      unsafeReference:
+        '保護ブロックを書き換えずに安全に調整できない参照が含まれています。',
+      invalidLink: 'このフォルダから切り出し先への安全な Vault 内リンクを生成できませんでした。',
+      storageUnavailable:
+        'プラグイン保存領域（data.json）へ書き込めないため、Vault を変更せず停止しました。',
+    },
   },
   commands: {
     openAsMap: '現在のノートをマインドマップで開く',

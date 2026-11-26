@@ -47,6 +47,28 @@ class PatchAbortError extends Error {
   }
 }
 
+export function extractionFailureCode(error: unknown): SyncRejectCode {
+  const reason = error instanceof Error ? error.message : error;
+  switch (reason) {
+    case 'editor-dirty':
+    case 'editor-state-unknown':
+    case 'read-only-document':
+    case 'blocked-document':
+    case 'stale-target':
+    case 'indent-sensitive-unmapped-block':
+      return reason;
+    case 'cannot-extract':
+      return 'cannot-modify-root';
+    case 'invalid-extracted-structure':
+    case 'invalid-replacement':
+    case 'invalid-list':
+    case 'invalid-heading':
+      return 'invariant-check-failed';
+    default:
+      return 'io-error';
+  }
+}
+
 function resolveFocusNodeId(doc: MindMapDocument, preferredHeaderLine: number): string {
   if (preferredHeaderLine >= 0) {
     for (const node of doc.nodes.values()) {
@@ -126,10 +148,42 @@ export class FileCoordinator {
   }
 
   redoForFile(filePath: string, fallbackTitle: string): Promise<CommandDispatchOutcome> {
-    const destination = this.histories.get(filePath)?.redoStack.at(-1)?.extraction?.destination;
-    return this.enqueueForPaths([filePath, ...(destination ? [destination] : [])], () =>
-      this.executeHistoryStep(filePath, fallbackTitle, 'redo', destination),
-    );
+    return this.enqueueRedo(filePath, fallbackTitle);
+  }
+
+  private async enqueueRedo(
+    filePath: string,
+    fallbackTitle: string,
+  ): Promise<CommandDispatchOutcome> {
+    let expectedDestination = this.histories.get(filePath)?.redoStack.at(-1)?.extraction?.destination;
+    for (let attempt = 0; attempt < 4; attempt += 1) {
+      const paths = expectedDestination ? [filePath, expectedDestination] : [filePath];
+      let needsReacquire = false;
+      let nextDestination: string | undefined;
+      const outcome = await this.enqueueForPaths(paths, () => {
+        const liveDest = this.histories.get(filePath)?.redoStack.at(-1)?.extraction?.destination;
+        if (liveDest !== expectedDestination) {
+          needsReacquire = true;
+          nextDestination = liveDest;
+          return Promise.resolve({
+            accepted: false,
+            rejectCode: 'boundary-no-op',
+            reason: 'reacquire-redo-lock',
+          });
+        }
+        return this.executeHistoryStep(filePath, fallbackTitle, 'redo', expectedDestination);
+      });
+      if (needsReacquire) {
+        expectedDestination = nextDestination;
+        continue;
+      }
+      return outcome;
+    }
+    return {
+      accepted: false,
+      rejectCode: 'stale-target',
+      reason: 'history-changed',
+    };
   }
 
   extract(request: ExtractionRequest): Promise<CommandDispatchOutcome> {
@@ -137,7 +191,12 @@ export class FileCoordinator {
     try {
       destination = validateVaultNotePath(request.destination, request.source);
     } catch (error) {
-      return Promise.resolve({ accepted: false, rejectCode: 'io-error', reason: error instanceof Error ? error.message : String(error) });
+      const reason = error instanceof Error ? error.message : String(error);
+      return Promise.resolve({
+        accepted: false,
+        rejectCode: extractionFailureCode(reason),
+        reason,
+      });
     }
     return this.enqueueForPaths([request.source, destination], async () => {
       if (!this.extractionHost) return { accepted: false, rejectCode: 'unsupported-command' };
@@ -163,13 +222,26 @@ export class FileCoordinator {
           focusNodeId: resolveFocusNodeId(parsed.document, record.line),
         };
       } catch (error) {
+        const reason = error instanceof Error ? error.message : String(error);
         return {
           accepted: false,
-          rejectCode: 'io-error',
-          reason: error instanceof Error ? error.message : String(error),
+          rejectCode: extractionFailureCode(reason),
+          reason,
         };
       }
     });
+  }
+
+  async dismissExtraction(record: ExtractionRecord): Promise<void> {
+    const result = await this.enqueueForPaths([record.source, record.destination], async () => {
+      const host = this.extractionHost;
+      if (!host || host.records().find((r) => r.id === record.id) !== record) {
+        return { accepted: false };
+      }
+      await host.remove(record.id);
+      return { accepted: true };
+    });
+    if (!result.accepted) throw new Error('recovery-record-changed');
   }
 
   reconcileExtraction(record: ExtractionRecord): Promise<CommandDispatchOutcome> {
@@ -177,6 +249,9 @@ export class FileCoordinator {
       if (!this.extractionHost || record.phase !== 'replacing')
         return { accepted: false, rejectCode: 'unsupported-command' };
       try {
+        if (this.extractionHost.records().find((r) => r.id === record.id) !== record) {
+          return { accepted: false, rejectCode: 'stale-target' };
+        }
         await confirmExtraction(this.extractionHost, record);
         return { accepted: true };
       } catch (error) {
@@ -382,7 +457,10 @@ export class FileCoordinator {
           divergedExternally = true;
           throw new PatchAbortError('stale-target', 'Source changed since undo.');
         }
-        await commitExtraction(this.extractionHost, { ...entry.extraction, source: filePath });
+        await commitExtraction(
+          this.extractionHost,
+          { ...entry.extraction, source: filePath, fromRedo: true },
+        );
         const parsed = parseMarkdownToMap(nextRawText, fallbackTitle);
         if (parsed.status !== 'ok') throw new Error('invalid-replacement');
         outcomeBox.nextDocument = parsed.document;

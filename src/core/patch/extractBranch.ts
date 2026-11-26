@@ -81,13 +81,36 @@ export function planBranchExtraction(
     (node) => node.headerLine >= startLine && node.headerLine < endLine && node.id !== doc.rootId,
   );
   const protectedLines = new Set<number>();
+  const beforeUnmapped: Array<{
+    readonly relStart: number;
+    readonly relEnd: number;
+    readonly kind: string;
+    readonly text: string;
+  }> = [];
   for (const node of descendants) {
     for (const block of node.unmappedBlocks) {
-      if (target.kind === 'list-item' && block.indentSensitive)
-        throw new Error('indent-sensitive-unmapped-block');
+      const blockLines = original.slice(block.range.startLine, block.range.endLine);
+      if (target.kind === 'list-item') {
+        // Removing the enclosing list context leaves indented unmapped blocks at root level,
+        // where 4+ leading columns become CommonMark indented code blocks (even for comments
+        // or trailing paragraphs whose indentSensitive flag is false).
+        const hasFourColumnIndent = blockLines.some(
+          (line) => line.trim().length > 0 && countIndentColumns(line.match(/^[ \t]*/)?.[0] ?? '') >= 4,
+        );
+        if (block.indentSensitive || hasFourColumnIndent) {
+          throw new Error('indent-sensitive-unmapped-block');
+        }
+      }
       for (let i = block.range.startLine; i < block.range.endLine; i++) protectedLines.add(i);
+      beforeUnmapped.push({
+        relStart: block.range.startLine - startLine,
+        relEnd: block.range.endLine - startLine,
+        kind: block.kind,
+        text: blockLines.join(eol),
+      });
     }
   }
+  beforeUnmapped.sort((a, b) => a.relStart - b.relStart);
   // Edits come from resolved Vault references. Apply from right to left within each line.
   let nextLine = endLine;
   let nextColumn = 0;
@@ -160,6 +183,38 @@ export function planBranchExtraction(
   for (let i = 1; i < lines.length; i++) {
     if (doc.lineKinds[startLine + i] !== extracted.lineKinds[i])
       throw new Error('invalid-extracted-structure');
+  }
+  const afterUnmapped: Array<{
+    readonly relStart: number;
+    readonly relEnd: number;
+    readonly kind: string;
+    readonly text: string;
+  }> = [];
+  for (const node of extracted.nodes.values()) {
+    for (const block of node.unmappedBlocks) {
+      afterUnmapped.push({
+        relStart: block.range.startLine,
+        relEnd: block.range.endLine,
+        kind: block.kind,
+        text: lines.slice(block.range.startLine, block.range.endLine).join(eol),
+      });
+    }
+  }
+  afterUnmapped.sort((a, b) => a.relStart - b.relStart);
+  if (afterUnmapped.length !== beforeUnmapped.length) {
+    throw new Error('invalid-extracted-structure');
+  }
+  for (let i = 0; i < beforeUnmapped.length; i += 1) {
+    const before = beforeUnmapped[i]!;
+    const afterBlock = afterUnmapped[i]!;
+    if (
+      afterBlock.relStart !== before.relStart ||
+      afterBlock.relEnd !== before.relEnd ||
+      afterBlock.kind !== before.kind ||
+      afterBlock.text !== before.text
+    ) {
+      throw new Error('invalid-extracted-structure');
+    }
   }
   const replacement = header.slice(0, column) + link + suffix;
   const after = [...original.slice(0, startLine), replacement, ...original.slice(endLine)].join(

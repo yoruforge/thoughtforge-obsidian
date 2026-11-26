@@ -1126,3 +1126,6 @@
 
 .ito-extract-field { display: flex; justify-content: space-between; align-items: center; gap: 1em; margin: .75em 0; }
 .ito-extract-recovery { width: 100%; min-height: 8em; }
+.ito-extract-recovery-card { padding: .75em 0; border-bottom: 1px solid var(--background-modifier-border); }
+.ito-extract-recovery-dismiss { margin-top: .5em; }
+.ito-extract-recovery-dismiss .ito-extract-field { justify-content: flex-start; }

@@ -22,6 +22,41 @@ export const en = {
     blocks: 'Preserved blocks',
     none: 'No unfinished extractions.',
     saved: 'Saved destination',
+    copyOriginal: 'Copy Markdown',
+    copiedNotice: 'Copied the original branch Markdown to the clipboard.',
+    dismissConfirm:
+      'I verified both notes and want to clear this recovery record (no notes will be deleted).',
+    dismissButton: 'Clear record',
+    dismissedNotice: 'Cleared the extraction recovery record.',
+    dismissFailedNotice: 'Could not clear the recovery record because plugin storage is unavailable.',
+    errors: {
+      invalidTargetPath: 'Invalid target note path or filename.',
+      targetSameAsSource: 'Destination cannot be the same note as the source.',
+      targetAlreadyExists: 'A note with this name already exists.',
+      ambiguousPath: 'Multiple vault files match this path with different casing.',
+      destinationMissingOrRenamed: 'The extracted note was deleted or renamed.',
+      destinationChanged: 'The extracted note was modified outside this operation.',
+      pendingExtraction:
+        'An unfinished extraction record exists for this branch or destination. Resolve or resume it first.',
+      ambiguousRecovery:
+        'Could not uniquely identify the branch after edits. Review and confirm before resuming.',
+      recoveryRequired:
+        'Both notes changed unexpectedly. Open "Recover an unfinished branch extraction" to inspect and copy the original branch.',
+      branchChanged:
+        'The branch content changed after the interrupted extraction. Resolve the unfinished record before extracting again.',
+      metadataUpdating:
+        'Obsidian metadata cache is still updating for this note. Wait a moment and retry.',
+      unresolvedReference:
+        'This branch contains an unresolved internal link or image reference that cannot be verified before moving.',
+      ambiguousReference:
+        'A link or image in this branch would become ambiguous in the destination folder.',
+      unsafeReference:
+        'A link or reference in this branch could not be safely rewritten without touching protected blocks.',
+      invalidLink:
+        'Could not generate a safe vault link to the extracted note from this folder.',
+      storageUnavailable:
+        'Plugin storage (data.json) is read-only or unavailable, so extraction stopped before modifying the vault.',
+    },
   },
   commands: {
     openAsMap: 'Open current note as mind map',

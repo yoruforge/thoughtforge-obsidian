@@ -197,6 +197,7 @@ describe('branch extraction recovery', () => {
       expect((await co.extract(v.request())).accepted).toBe(false);
       expect(v.files.get(source)).toBe(initial);
       expect(co.getHistoryStatus(source).undoCount).toBe(0);
+      expect(v.records()[0]?.phase).toBe('created');
       const next = v.restart();
       next.editors = new Map(v.editors);
       expect(
@@ -221,7 +222,10 @@ describe('branch extraction recovery', () => {
       if (external) {
         expect(v.files.get(source)).toMatch(/addition\n$/);
         expect(v.records()[0]?.originalBranch).toContain('body');
-      } else expect(v.files.get(source)).toBe(initial);
+      } else {
+        expect(v.files.get(source)).toBe(initial);
+        expect(v.records()).toEqual([]);
+      }
     }
   });
   it('B1 compares raw bytes including CRLF and trailing newline', async () => {
@@ -322,4 +326,42 @@ describe('branch extraction recovery', () => {
     ]);
     expect(v.creates).toBe(1);
   });
+  it('runs a queued Redo after Undo establishes the destination', async () => {
+    const v = new Vault(), co = v.coordinator();
+    expect((await co.extract(v.request())).accepted).toBe(true);
+    const linked = v.files.get(source);
+    const results = await Promise.all([co.undoForFile(source, 'Map'), co.redoForFile(source, 'Map')]);
+    expect(results.map((result) => result.accepted)).toEqual([true, true]);
+    expect(v.files.get(source)).toBe(linked);
+  });
+
+  it('clears a failed Redo record when the source is unchanged, including after restart', async () => {
+    const v = new Vault(), co = v.coordinator();
+    await co.extract(v.request());
+    await co.undoForFile(source, 'Map');
+    v.beforeSourceWrite = () => { throw new Error('write failed'); };
+    expect((await co.redoForFile(source, 'Map')).accepted).toBe(false);
+    expect(v.records()).toEqual([]);
+    expect(co.getHistoryStatus(source).redoCount).toBe(1);
+    v.journalFail = 'remove';
+    expect((await co.redoForFile(source, 'Map')).accepted).toBe(false);
+    const restarted = v.restart();
+    expect((await restarted.coordinator().reconcileExtraction(restarted.records()[0]!)).accepted).toBe(true);
+    expect(restarted.records()).toEqual([]);
+    expect(restarted.files.get(source)).toBe(initial);
+  });
+
+  it('removes only the confirmed recovery record and preserves both files', async () => {
+    const v = new Vault();
+    await interrupt(v);
+    const stale = v.records()[0]!, co = v.coordinator();
+    await v.put({...stale, phase: 'replacing'});
+    const files = new Map(v.files);
+    await expect(co.dismissExtraction(stale)).rejects.toThrow('recovery-record-changed');
+    expect(v.records()).toHaveLength(1);
+    await co.dismissExtraction(v.records()[0]!);
+    expect(v.files).toEqual(files);
+    expect(v.records()).toEqual([]);
+  });
+
 });

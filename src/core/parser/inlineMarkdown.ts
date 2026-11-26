@@ -15,6 +15,48 @@ export type InlineMarkdownToken =
   | { readonly kind: 'url'; readonly raw: string };
 
 /**
+ * Masks Obsidian inline comments (`%% ... %%`, or unclosed `%%` to EOL) outside code spans
+ * with equal-length spaces so downstream inline tokenizers ignore commented-out links while
+ * preserving exact UTF-16 column offsets.
+ */
+export function maskObsidianInlineComments(line: string): string {
+  if (!line.includes('%%')) return line;
+  let out = '';
+  let i = 0;
+  while (i < line.length) {
+    const ch = line[i] ?? '';
+    if (ch === '\\' && i + 1 < line.length) {
+      out += line.slice(i, i + 2);
+      i += 2;
+      continue;
+    }
+    if (ch === '`') {
+      const end = findCodeSpanEnd(line, i);
+      if (end !== null) {
+        out += line.slice(i, end);
+        i = end;
+      } else {
+        while (i < line.length && line[i] === '`') {
+          out += '`';
+          i += 1;
+        }
+      }
+      continue;
+    }
+    if (ch === '%' && line[i + 1] === '%') {
+      const closeIdx = line.indexOf('%%', i + 2);
+      const commentEnd = closeIdx >= 0 ? closeIdx + 2 : line.length;
+      out += ' '.repeat(commentEnd - i);
+      i = commentEnd;
+      continue;
+    }
+    out += ch;
+    i += 1;
+  }
+  return out;
+}
+
+/**
  * Finds the end index (exclusive) of a CommonMark inline code span starting at `start`
  * (where `text[start] === '`'`). Matches the exact closing run of `tickCount` backticks
  * per CommonMark §6.1 so multi-backtick spans containing shorter backtick runs

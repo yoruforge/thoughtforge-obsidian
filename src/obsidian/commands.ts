@@ -18,9 +18,14 @@ export function registerPluginCommands(plugin: ThoughtForgePlugin): void {
     id: 'recover-branch-extraction',
     name: plugin.messages.extraction.recovery,
     checkCallback: (checking) => {
-      const records = plugin.getExtractionAdapter().records();
+      const adapter = plugin.getExtractionAdapter();
+      const records = adapter.records();
       if (!records.length) return false;
-      if (!checking) showExtractionRecovery(plugin.app, records, plugin.messages.extraction);
+      if (!checking) {
+        showExtractionRecovery(plugin.app, records, plugin.messages.extraction, (record) =>
+          plugin.getFileCoordinator().dismissExtraction(record),
+        );
+      }
       return true;
     },
   });
