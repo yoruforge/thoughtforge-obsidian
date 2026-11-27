@@ -1,5 +1,6 @@
 import type { MindMapDocument } from '../core/model';
 import { parseMarkdownToMap } from '../core/parser';
+import { validateVaultNotePath } from '../core/patch/extractBranch';
 import { planAndValidatePatch, type PatchExecutionResult } from '../core/patch';
 import type { SemanticCommand } from '../core/patch/commands';
 import { checkMarkdownEditorGate } from './MarkdownEditorGate';
@@ -11,10 +12,13 @@ import type {
   SyncRejectCode,
 } from './ports';
 
+import { commitExtraction, confirmExtraction, extractBranch, type ExtractionHost, type ExtractionRecord, type ExtractionRequest } from './branchExtraction';
+
 const DEFAULT_MAX_HISTORY_ENTRIES = 100;
 const DEFAULT_MAX_HISTORY_CHARS_PER_FILE = 5 * 1024 * 1024;
 
 interface HistoryEntry {
+  readonly extraction?: ExtractionRecord;
   readonly beforeRawText: string;
   readonly afterRawText: string;
   readonly focusBeforeHeaderLine: number;
@@ -28,6 +32,7 @@ interface FileHistoryState {
 }
 
 export interface FileCoordinatorOptions {
+  extractionHost?: ExtractionHost;
   readonly maxHistoryEntries?: number;
   readonly maxHistoryCharsPerFile?: number;
 }
@@ -39,6 +44,28 @@ class PatchAbortError extends Error {
   ) {
     super(message);
     this.name = 'PatchAbortError';
+  }
+}
+
+export function extractionFailureCode(error: unknown): SyncRejectCode {
+  const reason = error instanceof Error ? error.message : error;
+  switch (reason) {
+    case 'editor-dirty':
+    case 'editor-state-unknown':
+    case 'read-only-document':
+    case 'blocked-document':
+    case 'stale-target':
+    case 'indent-sensitive-unmapped-block':
+      return reason;
+    case 'cannot-extract':
+      return 'cannot-modify-root';
+    case 'invalid-extracted-structure':
+    case 'invalid-replacement':
+    case 'invalid-list':
+    case 'invalid-heading':
+      return 'invariant-check-failed';
+    default:
+      return 'io-error';
   }
 }
 
@@ -58,6 +85,7 @@ function resolveFocusNodeId(doc: MindMapDocument, preferredHeaderLine: number): 
  * CAS-protected Undo/Redo stacks through ObsidianHostPort.
  */
 export class FileCoordinator {
+  private readonly extractionHost?: ExtractionHost;
   private readonly queues = new Map<string, Promise<void>>();
   private readonly histories = new Map<string, FileHistoryState>();
   private readonly maxHistoryEntries: number;
@@ -67,6 +95,7 @@ export class FileCoordinator {
     private readonly host: ObsidianHostPort,
     options?: FileCoordinatorOptions,
   ) {
+    this.extractionHost = options?.extractionHost;
     this.maxHistoryEntries = options?.maxHistoryEntries ?? DEFAULT_MAX_HISTORY_ENTRIES;
     this.maxHistoryCharsPerFile =
       options?.maxHistoryCharsPerFile ?? DEFAULT_MAX_HISTORY_CHARS_PER_FILE;
@@ -119,29 +148,140 @@ export class FileCoordinator {
   }
 
   redoForFile(filePath: string, fallbackTitle: string): Promise<CommandDispatchOutcome> {
-    return this.enqueueForFile(filePath, () =>
-      this.executeHistoryStep(filePath, fallbackTitle, 'redo'),
-    );
+    return this.enqueueRedo(filePath, fallbackTitle);
   }
 
-  private enqueueForFile(
+  private async enqueueRedo(
     filePath: string,
-    task: () => Promise<CommandDispatchOutcome>,
+    fallbackTitle: string,
   ): Promise<CommandDispatchOutcome> {
-    const previous = this.queues.get(filePath) ?? Promise.resolve();
-    const runTask = previous.catch(() => undefined).then(task);
+    let expectedDestination = this.histories.get(filePath)?.redoStack.at(-1)?.extraction?.destination;
+    for (let attempt = 0; attempt < 4; attempt += 1) {
+      const paths = expectedDestination ? [filePath, expectedDestination] : [filePath];
+      let needsReacquire = false;
+      let nextDestination: string | undefined;
+      const outcome = await this.enqueueForPaths(paths, () => {
+        const liveDest = this.histories.get(filePath)?.redoStack.at(-1)?.extraction?.destination;
+        if (liveDest !== expectedDestination) {
+          needsReacquire = true;
+          nextDestination = liveDest;
+          return Promise.resolve({
+            accepted: false,
+            rejectCode: 'boundary-no-op',
+            reason: 'reacquire-redo-lock',
+          });
+        }
+        return this.executeHistoryStep(filePath, fallbackTitle, 'redo', expectedDestination);
+      });
+      if (needsReacquire) {
+        expectedDestination = nextDestination;
+        continue;
+      }
+      return outcome;
+    }
+    return {
+      accepted: false,
+      rejectCode: 'stale-target',
+      reason: 'history-changed',
+    };
+  }
 
-    const queueTail = runTask.then(
+  extract(request: ExtractionRequest): Promise<CommandDispatchOutcome> {
+    let destination: string;
+    try {
+      destination = validateVaultNotePath(request.destination, request.source);
+    } catch (error) {
+      const reason = error instanceof Error ? error.message : String(error);
+      return Promise.resolve({
+        accepted: false,
+        rejectCode: extractionFailureCode(reason),
+        reason,
+      });
+    }
+    return this.enqueueForPaths([request.source, destination], async () => {
+      if (!this.extractionHost) return { accepted: false, rejectCode: 'unsupported-command' };
+      try {
+        const record = await extractBranch(this.extractionHost, request);
+        const parsed = parseMarkdownToMap(
+          record.after,
+          request.source.split('/').pop()!.replace(/\.md$/i, ''),
+        );
+        if (parsed.status !== 'ok') throw new Error('invalid-replacement');
+        this.pushUndoEntry(request.source, {
+          extraction: record,
+          beforeRawText: record.before,
+          afterRawText: record.after,
+          focusBeforeHeaderLine: record.line,
+          focusAfterHeaderLine: record.line,
+          charCost: record.before.length + record.after.length + record.output.length,
+        });
+        return {
+          accepted: true,
+          nextRawText: record.after,
+          nextDocument: parsed.document,
+          focusNodeId: resolveFocusNodeId(parsed.document, record.line),
+        };
+      } catch (error) {
+        const reason = error instanceof Error ? error.message : String(error);
+        return {
+          accepted: false,
+          rejectCode: extractionFailureCode(reason),
+          reason,
+        };
+      }
+    });
+  }
+
+  async dismissExtraction(record: ExtractionRecord): Promise<void> {
+    const result = await this.enqueueForPaths([record.source, record.destination], async () => {
+      const host = this.extractionHost;
+      if (!host || host.records().find((r) => r.id === record.id) !== record) {
+        return { accepted: false };
+      }
+      await host.remove(record.id);
+      return { accepted: true };
+    });
+    if (!result.accepted) throw new Error('recovery-record-changed');
+  }
+
+  reconcileExtraction(record: ExtractionRecord): Promise<CommandDispatchOutcome> {
+    return this.enqueueForPaths([record.source, record.destination], async () => {
+      if (!this.extractionHost || record.phase !== 'replacing')
+        return { accepted: false, rejectCode: 'unsupported-command' };
+      try {
+        if (this.extractionHost.records().find((r) => r.id === record.id) !== record) {
+          return { accepted: false, rejectCode: 'stale-target' };
+        }
+        await confirmExtraction(this.extractionHost, record);
+        return { accepted: true };
+      } catch (error) {
+        return {
+          accepted: false,
+          rejectCode: 'io-error',
+          reason: error instanceof Error ? error.message : String(error),
+        };
+      }
+    });
+  }
+
+  private enqueueForFile(filePath: string, task: () => Promise<CommandDispatchOutcome>) {
+    return this.enqueueForPaths([filePath], task);
+  }
+
+  private enqueueForPaths(paths: readonly string[], task: () => Promise<CommandDispatchOutcome>) {
+    // Reserve every path in the same tick, before yielding to a competing operation.
+    const keys = [...new Set(paths.map((path) => path.toLowerCase()))].sort();
+    const runTask = Promise.all(keys.map((key) => this.queues.get(key))).then(task);
+    const tail = runTask.then(
       () => undefined,
       () => undefined,
     );
-    this.queues.set(filePath, queueTail);
-    void queueTail.finally(() => {
-      if (this.queues.get(filePath) === queueTail) {
-        this.queues.delete(filePath);
+    for (const key of keys) this.queues.set(key, tail);
+    void tail.then(() => {
+      for (const key of keys) {
+        if (this.queues.get(key) === tail) this.queues.delete(key);
       }
     });
-
     return runTask;
   }
 
@@ -268,6 +408,7 @@ export class FileCoordinator {
     filePath: string,
     fallbackTitle: string,
     direction: 'undo' | 'redo',
+    lockedDestination?: string,
   ): Promise<CommandDispatchOutcome> {
     const state = this.histories.get(filePath);
     const sourceStack = direction === 'undo' ? state?.undoStack : state?.redoStack;
@@ -308,34 +449,51 @@ export class FileCoordinator {
     let divergedExternally = false;
 
     try {
-      await this.host.processFile(filePath, (currentRaw) => {
-        const callbackGate = checkMarkdownEditorGate(this.host, filePath);
-        if (!callbackGate.allowed) {
-          throw new PatchAbortError(callbackGate.rejectCode, callbackGate.reason);
+      if (direction === 'redo' && entry.extraction) {
+        if (!this.extractionHost || lockedDestination !== entry.extraction.destination) {
+          throw new Error('history-changed');
         }
-
-        if (currentRaw !== expectedCurrentRaw) {
+        if ((await this.host.readFile(filePath)) !== expectedCurrentRaw) {
           divergedExternally = true;
-          throw new PatchAbortError(
-            'stale-target',
-            'Cannot apply undo/redo because the note was modified outside the mind map.',
-          );
+          throw new PatchAbortError('stale-target', 'Source changed since undo.');
         }
+        await commitExtraction(
+          this.extractionHost,
+          { ...entry.extraction, source: filePath, fromRedo: true },
+        );
+        const parsed = parseMarkdownToMap(nextRawText, fallbackTitle);
+        if (parsed.status !== 'ok') throw new Error('invalid-replacement');
+        outcomeBox.nextDocument = parsed.document;
+      } else {
+        await this.host.processFile(filePath, (currentRaw) => {
+          const callbackGate = checkMarkdownEditorGate(this.host, filePath);
+          if (!callbackGate.allowed) {
+            throw new PatchAbortError(callbackGate.rejectCode, callbackGate.reason);
+          }
 
-        const reparsed = parseMarkdownToMap(nextRawText, fallbackTitle);
-        if (reparsed.status !== 'ok') {
-          throw new PatchAbortError('blocked-document', reparsed.detail);
-        }
-        if (reparsed.document.readOnlyReasons.length > 0) {
-          throw new PatchAbortError(
-            'invariant-check-failed',
-            `Restored snapshot became read-only (${reparsed.document.readOnlyReasons.join(', ')}).`,
-          );
-        }
+          if (currentRaw !== expectedCurrentRaw) {
+            divergedExternally = true;
+            throw new PatchAbortError(
+              'stale-target',
+              'Cannot apply undo/redo because the note was modified outside the mind map.',
+            );
+          }
 
-        outcomeBox.nextDocument = reparsed.document;
-        return nextRawText;
-      });
+          const reparsed = parseMarkdownToMap(nextRawText, fallbackTitle);
+          if (reparsed.status !== 'ok') {
+            throw new PatchAbortError('blocked-document', reparsed.detail);
+          }
+          if (reparsed.document.readOnlyReasons.length > 0) {
+            throw new PatchAbortError(
+              'invariant-check-failed',
+              `Restored snapshot became read-only (${reparsed.document.readOnlyReasons.join(', ')}).`,
+            );
+          }
+
+          outcomeBox.nextDocument = reparsed.document;
+          return nextRawText;
+        });
+      }
     } catch (err) {
       if (divergedExternally) {
         // Drop diverged history so subsequent undo/redo cannot clobber external edits.
