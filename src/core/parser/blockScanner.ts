@@ -55,7 +55,7 @@ const FENCE_OPEN_RE = /^([ \t]*)(`{3,}|~{3,})(.*)$/;
 const ATX_HEADING_RE = /^([ \t]*)(#{1,6})(?:([ \t]+)(.*)|[ \t]*)$/;
 const LIST_ITEM_RE = /^([ \t]*)([-*+]|(?:\d{1,9}[.)]))(?:([ \t]+)(.*)|[ \t]*)$/;
 const THEMATIC_BREAK_RE = /^[ \t]{0,3}(?:(?:\*[ \t]*){3,}|(?:-[ \t]*){3,}|(?:_[ \t]*){3,})$/;
-const CALLOUT_START_RE = /^[ \t]*>[ \t]*\[![^\]]+\]/;
+const CALLOUT_START_RE = /^[ \t]*>[ \t]*\[![^\][\s]+\][+-]?(?=[ \t]|$)/;
 const BLOCKQUOTE_RE = /^[ \t]*>/;
 const FOOTNOTE_DEF_RE = /^[ \t]{0,3}\[\^[^\]]+\]:/;
 const LINK_REF_DEF_RE = /^[ \t]{0,3}\[[^[\]^][^\]]*\]:[ \t]*\S+/;

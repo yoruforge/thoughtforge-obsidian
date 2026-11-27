@@ -1,6 +1,9 @@
 import { isSafeVaultLinkPath } from '../core/view/vaultLinkPath';
 import { TFolder, type App } from 'obsidian';
-import { maskObsidianInlineComments, tokenizeInlineMarkdown } from '../core/parser/inlineMarkdown';
+import {
+  verifyBranchReferenceCoverage,
+  type CachedReferenceSnapshot,
+} from '../core/patch/branchReferenceCoverage';
 import { ObsidianHostAdapter } from './ObsidianHostAdapter';
 import type { ExtractionHost, ExtractionRecord } from '../sync/branchExtraction';
 import {
@@ -94,65 +97,67 @@ export class ExtractionAdapter extends ObsidianHostAdapter implements Extraction
     const lines = before.split(doc.lineEnding),
       edits: ReferenceEdit[] = [];
     const movedAnchors: { subpath: string; line: number }[] = [];
-    const inBranch = (line: number) =>
-      line >= target.headerLine && line < target.subtreeRange.endLine;
-    if (
-      [
-        ...(cache.footnoteRefs ?? []),
-        ...(cache.footnotes ?? []),
-        ...(cache.referenceLinks ?? []),
-      ].some((ref) => inBranch(ref.position.start.line))
-    ) {
-      throw new Error('unsafe-reference');
+    const toPos = (pos: {
+      readonly start: { readonly line: number; readonly col: number };
+      readonly end: { readonly line: number; readonly col: number };
+    }) => ({
+      startLine: pos.start.line,
+      startCol: pos.start.col,
+      endLine: pos.end.line,
+      endCol: pos.end.col,
+    });
+    const snapshot: CachedReferenceSnapshot = {
+      links: (cache.links ?? []).map((ref) => ({
+        original: ref.original,
+        position: toPos(ref.position),
+      })),
+      embeds: (cache.embeds ?? []).map((ref) => ({
+        original: ref.original,
+        position: toPos(ref.position),
+      })),
+      footnotes: (cache.footnotes ?? []).map((ref) => toPos(ref.position)),
+      footnoteRefs: (cache.footnoteRefs ?? []).map((ref) => toPos(ref.position)),
+      referenceLinks: (cache.referenceLinks ?? []).map((ref) => toPos(ref.position)),
+    };
+    const coverage = verifyBranchReferenceCoverage(doc, target, lines, snapshot);
+    if (coverage.status === 'rejected') {
+      throw new Error(coverage.code);
     }
     const refs = [...(cache.links ?? []), ...(cache.embeds ?? [])];
-    const visibleLines = lines.map(maskObsidianInlineComments);
-    const cachedPositions = new Map(
-      refs.map((ref) => [ref.position.start.line + ':' + ref.position.start.col, ref.original]),
-    );
-    for (let line = target.headerLine; line < target.subtreeRange.endLine; line++) {
-      if (!['heading', 'list-item', 'topic-note'].includes(doc.lineKinds[line] ?? '')) continue;
-      let col = 0;
-      for (const token of tokenizeInlineMarkdown(visibleLines[line] ?? '')) {
-        const spelling = token.kind === 'plain' ? token.text : token.raw;
-        const internal =
-          token.kind === 'wikilink' ||
-          token.kind === 'wikiembed' ||
-          (token.kind === 'mdlink' && !/^[a-z][a-z0-9+.-]*:/i.test(token.rawTarget)) ||
-          (token.kind === 'mdimage' && !/\]\(<?[a-z][a-z0-9+.-]*:/i.test(token.raw));
-        if (internal && maskObsidianInlineComments(cachedPositions.get(line + ':' + col) ?? '') !== spelling)
-          throw new Error('metadata-updating');
-        // Check nested internal Markdown images/embeds inside a Markdown link label (e.g. `[![alt](pic.png)](url)`).
-        if (token.kind === 'mdlink' && token.raw.startsWith('[')) {
-          const closeBracket = token.raw.lastIndexOf('](');
-          if (closeBracket > 1) {
-            let innerCol = col + 1;
-            const labelRaw = token.raw.slice(1, closeBracket);
-            for (const innerToken of tokenizeInlineMarkdown(labelRaw)) {
-              const innerSpelling = innerToken.kind === 'plain' ? innerToken.text : innerToken.raw;
-              const innerInternal =
-                innerToken.kind === 'wikiembed' ||
-                (innerToken.kind === 'mdimage' && !/\]\(<?[a-z][a-z0-9+.-]*:/i.test(innerToken.raw));
-              if (innerInternal && cachedPositions.get(line + ':' + innerCol) !== innerSpelling)
-                throw new Error('metadata-updating');
-              innerCol += innerSpelling.length;
-            }
-          }
-        }
-        col += spelling.length;
-      }
-    }
     for (const ref of refs) {
       const { start, end } = ref.position;
       if (start.line < target.subtreeRange.startLine || start.line >= target.subtreeRange.endLine)
         continue;
       const original = ref.original;
-      if (start.line !== end.line || lines[start.line]?.slice(start.col, end.col) !== original)
+      if (start.line !== end.line) {
+        if (end.line >= lines.length) throw new Error('metadata-updating');
+        const actualLines: string[] = [];
+        let allMasked = true;
+        for (let ln = start.line; ln <= end.line; ln += 1) {
+          const lineText = lines[ln] ?? '';
+          const visibleText = coverage.visibleLines.get(ln);
+          const sliceStart = ln === start.line ? start.col : 0;
+          const sliceEnd = ln === end.line ? end.col : lineText.length;
+          actualLines.push(lineText.slice(sliceStart, sliceEnd));
+          if (visibleText === undefined || visibleText.slice(sliceStart, sliceEnd).trim() !== '') {
+            allMasked = false;
+          }
+        }
+        if (actualLines.join('\n') !== original.replace(/\r\n/g, '\n')) {
+          throw new Error('metadata-updating');
+        }
+        if (allMasked) continue;
+        if (isExternalCachedRef(original, ref.link)) continue;
+        throw new Error('unsafe-reference');
+      }
+      if (lines[start.line]?.slice(start.col, end.col) !== original)
         throw new Error('metadata-updating');
       // Obsidian can cache links inside comments even though they are not active references.
-      if (visibleLines[start.line]?.slice(start.col, end.col).trim() === '') continue;
+      const singleVisible = coverage.visibleLines.get(start.line);
+      if (singleVisible !== undefined && singleVisible.slice(start.col, end.col).trim() === '')
+        continue;
+      if (isExternalCachedRef(original, ref.link)) continue;
       const { pathPart, subpath } = splitLinkTargetSubpath(ref.link);
-      if (/^https?:\/\//i.test(ref.link)) continue;
       const old = pathPart ? app.metadataCache.getFirstLinkpathDest(pathPart, source) : file;
       if (!old) throw new Error('unresolved-reference');
       let expected = old.path;
@@ -217,6 +222,13 @@ export class ExtractionAdapter extends ObsidianHostAdapter implements Extraction
     }
     return edits;
   }
+}
+
+const EXTERNAL_SCHEME_RE = /^[a-z][a-z0-9+.-]*:/i;
+
+function isExternalCachedRef(original: string, link: string): boolean {
+  if (/^https?:\/\//i.test(link)) return true;
+  return !/^!?\[\[/.test(original) && EXTERNAL_SCHEME_RE.test(link.trim());
 }
 
 // Locate the original URL spelling without decoding the remainder (alias, fragment or title).
